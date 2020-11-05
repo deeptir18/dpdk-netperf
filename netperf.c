@@ -49,7 +49,6 @@ static void add_latency(Latency_Dist_t *dist, uint64_t latency) {
     }
 
     if (latency > dist->max) {
-        printf("Setting max as %u; current max is: %u\n", (unsigned)latency, (unsigned)dist->max);
         dist->max = latency;
     }
 
@@ -78,7 +77,7 @@ static void dump_latencies(Latency_Dist_t *dist) {
     uint64_t median = arr[(size_t)((double)dist->total_count * 0.50)];
     uint64_t p99 = arr[(size_t)((double)dist->total_count * 0.99)];
     uint64_t p999 = arr[(size_t)((double)dist->total_count * 0.999)];
-    printf("Stats:\n\t- Min latency: %u ns\n\t- Max latency: %u ns\n\t- Avg latency: %" PRIu64 " us", (unsigned)dist->min, (unsigned)dist->max, avg_latency);
+    printf("Stats:\n\t- Min latency: %u ns\n\t- Max latency: %u ns\n\t- Avg latency: %" PRIu64 " ns", (unsigned)dist->min, (unsigned)dist->max, avg_latency);
     printf("\n\t- Median latency: %u ns\n\t- p99 latency: %u ns\n\t- p999 latency: %u ns\n", (unsigned)median, (unsigned)p99, (unsigned)p999);
     free((void *)arr);
 
