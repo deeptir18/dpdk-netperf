@@ -41,9 +41,6 @@ typedef struct Latency_Dist_t
 } Latency_Dist_t;
 
 static void add_latency(Latency_Dist_t *dist, uint64_t latency) {
-    if (latency == 0) {
-        printf("0 LATENCY\n");
-    }
     dist->latencies[dist->total_count] = latency;
     dist->total_count++;
     dist->latency_sum += latency;
@@ -52,6 +49,7 @@ static void add_latency(Latency_Dist_t *dist, uint64_t latency) {
     }
 
     if (latency > dist->max) {
+        printf("Setting max as %u; current max is: %u\n", (unsigned)latency, (unsigned)dist->max);
         dist->max = latency;
     }
 
@@ -242,7 +240,7 @@ struct rte_mempool *mbuf_pool;
 //struct rte_mempool *tx_mbuf_pool;
 static uint16_t our_dpdk_port_id;
 static struct rte_ether_addr my_eth;
-static Latency_Dist_t latency_dist = { min: LONG_MAX };
+static Latency_Dist_t latency_dist = { min: LONG_MAX, max: 0, total_count: 0, latency_sum: 0 };
 static uint64_t clock_offset = 0;
 // static unsigned int num_queues = 1;
 /******************************************/
@@ -709,7 +707,7 @@ static int do_client(void) {
         /* record timestamp in the payload itself*/
         uint64_t send_time = time_now(clock_offset);
         uint64_t *timestamp_ptr = (uint64_t *)(ptr);
-        *timestamp_ptr = htonl(send_time);
+        *timestamp_ptr = send_time;
 
         pkt->l2_len = RTE_ETHER_HDR_LEN;
         pkt->l3_len = sizeof(struct rte_ipv4_hdr);
@@ -748,7 +746,7 @@ static int do_client(void) {
                     /* parse the timestamp and record it */
                     uint64_t now = (uint64_t)time_now(clock_offset);
                     // printf("Got a packet at time now: %u\n", (unsigned)(now));
-                    uint64_t then = ntohl(*(uint64_t *)payload);
+                    uint64_t then = (*(uint64_t *)payload);
                     // printf("Received a packet with %u RTT\n", (unsigned)(now - then));
                     add_latency(&latency_dist, now - then);
                     rte_pktmbuf_free(pkts[i]);
