@@ -12,6 +12,7 @@
 #include <limits.h>
 #include <ctype.h>
 #include <getopt.h>
+#include <sys/mman.h>
 
 #include <rte_memory.h>
 #include <rte_launch.h>
@@ -24,6 +25,7 @@
 #include <rte_ip.h>
 #include <rte_lcore.h>
 #include <rte_memcpy.h>
+#include <rte_errno.h>
 #include <rte_udp.h>
 #include <rte_ethdev.h>
 #include <rte_arp.h>
@@ -212,6 +214,7 @@ static void default_onfail(int error_arg, const char *expr_arg,
 
 #define FULL_MAX 0xFFFFFFFF
 #define EMPTY_MAX 0x0
+#define PAGE_SIZE 4096
 /******************************************/
 /******************************************/
 /*Static Variables*/
@@ -220,13 +223,21 @@ enum {
     MODE_UDP_SERVER
 };
 
+enum {
+    MEM_DPDK = 0,
+    MEM_EXT
+};
+
 const struct rte_ether_addr ether_broadcast = {
     .addr_bytes = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 };
 struct rte_ether_addr server_mac = {
     .addr_bytes = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 };
+static uint16_t dpdk_nbports;
 static uint8_t mode;
+static uint8_t memory_mode;
+static size_t num_mbufs = 1;
 static uint32_t my_ip;
 static uint32_t server_ip;
 static size_t message_size = 1000;
@@ -236,11 +247,18 @@ static uint32_t intersend_time;
 static unsigned int client_port = 12345;
 static unsigned int server_port = 12345;
 struct rte_mempool *mbuf_pool;
+struct rte_mempool *extbuf_mempool;
+struct rte_mempool *header_mempool;
+//struct rte_mempool *tx_mbuf_pool;
 //struct rte_mempool *tx_mbuf_pool;
 static uint16_t our_dpdk_port_id;
 static struct rte_ether_addr my_eth;
 static Latency_Dist_t latency_dist = { min: LONG_MAX, max: 0, total_count: 0, latency_sum: 0 };
 static uint64_t clock_offset = 0;
+static size_t header_payload_size = 0; // for num_mbufs = 2, how much data comes after header in first mbuf (rest of size in second)
+
+static struct rte_mbuf_ext_shared_info *shinfo = NULL;
+
 // static unsigned int num_queues = 1;
 /******************************************/
 /******************************************/
@@ -284,8 +302,54 @@ static int str_to_long(const char *str, long *val)
 
 static void print_usage(void) {
     printf("To run client: netperf <EAL_INIT> -- --mode=CLIENT --ip=<CLIENT_IP> --server_ip=<SERVER_IP> --server_mac=<SERVER_MAC> --port=<PORT> --time=<TIME_SECONDS> --message_size<MESSAGE_SIZE_BYTES> --rate<RATE_PKTS_PER_S>.\n");
-    printf("To run client: netperf <EAL_INIT> -- --mode=CLIENT --ip=<CLIENT_IP> --server_ip=<SERVER_IP> --server_mac=<SERVER_MAC> --port=<PORT> --time=<TIME_SECONDS> --message_size<MESSAGE_SIZE_BYTES> --rate<RATE_PKTS_PER_S>.\n");
+    printf("To run server: netperf <EAL_INIT> -- --mode=SERVER --ip=<SERVER_IP> --memory=<EXTERNAL,DPDK> --num_mbufs=<INT> --header_payload=<INT>\n");
 }
+
+static void custom_pkt_init(struct rte_mempool *mp __attribute__((unused)), void *opaque_arg __attribute__((unused)), void *m, unsigned i __attribute__((unused))) {
+    struct rte_mbuf *pkt = (struct rte_mbuf *)(m);
+    uint8_t *p = rte_pktmbuf_mtod(pkt, uint8_t *);
+    p += 42;
+    char *s = (char *)(p);
+    memset(s, 'a', 8000);
+}
+
+static int init_extbuf_mempool(void) {
+    struct rte_pktmbuf_pool_private mbp_priv;
+    int ret;
+    unsigned elt_size;
+    elt_size = sizeof(struct rte_mbuf) + sizeof(struct rte_pktmbuf_pool_private);
+    mbp_priv.mbuf_data_room_size = 0;
+    mbp_priv.mbuf_priv_size = 0;
+
+    extbuf_mempool = rte_mempool_create_empty("extbuf_mempool", NUM_MBUFS * dpdk_nbports,
+                                                elt_size,
+                                                0,
+                                                sizeof(struct rte_pktmbuf_pool_private),
+                                                rte_socket_id(), 0);
+    if (extbuf_mempool == NULL) {
+        printf("Couldn't initialize an extbuf mempool\n");
+        return 1;
+    }
+
+    rte_pktmbuf_pool_init(extbuf_mempool, &mbp_priv);
+    if (rte_mempool_populate_default(extbuf_mempool) != (NUM_MBUFS * dpdk_nbports)) {
+        printf("Mempool populate didnt init correct number\n");
+        return 1;
+    }
+
+    if (rte_mempool_obj_iter(
+            extbuf_mempool,
+            rte_pktmbuf_init,
+            NULL) != (NUM_MBUFS * dpdk_nbports)) {
+            printf("Mempool obj iter didn't init correct number.\n");
+            return 1;
+        };
+
+    printf("Finished initializing extbuf_mempool\n");
+
+    return 0;
+}
+
 static int parse_args(int argc, char *argv[]) {
     long tmp;
     int has_server_ip = 0;
@@ -295,6 +359,7 @@ static int parse_args(int argc, char *argv[]) {
     int has_seconds = 0;
     int has_rate = 0;
     int opt = 0;
+    int has_memory = 0;
 
     static struct option long_options[] = {
         {"mode",      required_argument,       0,  'm' },
@@ -305,10 +370,13 @@ static int parse_args(int argc, char *argv[]) {
         {"message_size",   optional_argument, 0,  'z' },
         {"time",   optional_argument, 0,  't' },
         {"rate",   optional_argument, 0,  'r' },
+        {"memory", optional_argument, 0, 'b' },
+        {"num_mbufs", optional_argument, 0, 'n'},
+        {"header_payload", optional_argument, 0, 'h'},
         {0,           0,                 0,  0   }
     };
     int long_index = 0;
-    while ((opt = getopt_long(argc, argv,"m:i:s:p:c:z:t:r:",
+    while ((opt = getopt_long(argc, argv,"m:i:s:p:c:z:t:r:b:n:",
                    long_options, &long_index )) != -1) {
         switch (opt) {
             case 'm':
@@ -358,6 +426,22 @@ static int parse_args(int argc, char *argv[]) {
                 rate = tmp;
                 intersend_time = 1e9 / rate;
                 break;
+            case 'b':
+                has_memory = 1;
+                if (!strcmp(optarg, "EXTERNAL")) {
+                    memory_mode = MEM_EXT;
+                } else {
+                    memory_mode = MEM_DPDK;
+                }
+                break;
+            case 'n':
+                str_to_long(optarg, &tmp);
+                num_mbufs = (size_t)(tmp);
+                break;
+            case 'h':
+                str_to_long(optarg, &tmp);
+                header_payload_size = (size_t)(tmp);
+                break;
             default: print_usage();
                  exit(EXIT_FAILURE);
         }
@@ -382,6 +466,42 @@ static int parse_args(int argc, char *argv[]) {
             printf("If options for --time, --rate, or --message_size aren't provided, defaults will be used.\n");
         }
         printf("Running with:\n\t- port: %u\n\t- time: %u seconds\n\t- message_size: %u bytes\n\t- rate: %u pkts/sec (%u ns inter-packet send time)\n", (unsigned)client_port, (unsigned)seconds, (unsigned)message_size, (unsigned)rate, (unsigned)intersend_time);
+    } else {
+        // server mode
+        if (!has_memory) {
+            memory_mode = MEM_DPDK;
+        }
+        printf("Using: \n\t- nb_mbufs: %u\n\t- external_memory_mode: %d\n", (unsigned)num_mbufs, (memory_mode == MEM_EXT));
+    
+        if (memory_mode == MEM_EXT) {
+            int ret = init_extbuf_mempool();
+            printf("Initialized extbuf mempool\n");
+            if (ret != 0) {
+                printf("Error in int extbuf mempool: %d\n", ret);
+            }
+        }
+
+        if (memory_mode == MEM_DPDK && num_mbufs == 2) {
+            // don't need to initialize payload into this mempool
+            header_mempool = rte_pktmbuf_pool_create(
+                                "header_pool",
+                                NUM_MBUFS * dpdk_nbports,
+                                MBUF_CACHE_SIZE,
+                                0,
+                                MBUF_BUF_SIZE,
+                                rte_socket_id());
+            if (header_mempool == NULL) {
+                printf("Failed to initialize header mempool\n");
+            }
+            rte_mempool_obj_iter(header_mempool, &custom_pkt_init, NULL);
+        }
+
+        if (header_payload_size != 0) {
+            if (num_mbufs != 2) {
+                printf("Warning: ignoring header_payload_size arg if num_mbufs!=2.\n");
+            }
+        }
+
     }
 
     const char *s = getenv("MLX5_SHUT_UP_BF");
@@ -389,6 +509,45 @@ static int parse_args(int argc, char *argv[]) {
     return 0;
 
 }
+
+static void free_external_buffer_callback(void *addr, void *opaque) {
+    printf("Addr: %p\n", addr);
+    printf("opaque is null: %d\n", opaque == NULL);
+}
+
+static int init_ext_mem(void **ext_mem_addr) {
+    size_t page_size = PAGE_SIZE;
+    size_t num_pages = 100;
+    void * addr = mmap(NULL, page_size * num_pages, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+    if (addr == MAP_FAILED) {
+        printf("Failed to mmap memory\n");
+        return 1;
+    }
+
+    // next, register this external memory
+    int ret = rte_extmem_register(addr, (uint16_t)(page_size * num_pages), NULL, 0, page_size);
+    if (ret != 0) {
+        printf("Register err: %s\n", rte_strerror(rte_errno));
+        return ret;
+    }
+
+    uint16_t pid = 0;
+    RTE_ETH_FOREACH_DEV(pid) {
+        struct rte_eth_dev *dev = &rte_eth_devices[pid];
+        ret = rte_dev_dma_map(dev->device, addr, 0, (uint16_t)(page_size * num_pages));
+        if (ret != 0) {
+            printf("DMA map errno: %s\n", rte_strerror(rte_errno));
+            return ret;
+        }
+    }
+    memset((char *)addr, 'D', page_size * num_pages);
+    uint16_t buf_len = (uint16_t)(page_size * num_pages);
+    shinfo = rte_pktmbuf_ext_shinfo_init_helper(addr, &buf_len, free_external_buffer_callback, NULL);
+    printf("Finished registering external memory\n");
+    *ext_mem_addr = addr;
+    return 0;
+}
+
 static int print_link_status(FILE *f, uint16_t port_id, const struct rte_eth_link *link) {
 
     struct rte_eth_link link2 = {};
@@ -428,7 +587,8 @@ static int wait_for_link_status_up(uint16_t port_id) {
 
 }
 
-static int init_dpdk_port(uint16_t port_id, struct rte_mempool* mbuf_pool) {
+
+static int init_dpdk_port(uint16_t port_id, struct rte_mempool *mbuf_pool) {
     printf("Initializing port %u\n", (unsigned)(port_id));
     NETPERF_TRUE(ERANGE, rte_eth_dev_is_valid_port(port_id)); 
     const uint16_t rx_rings = 1;
@@ -516,6 +676,7 @@ static int dpdk_init(int argc, char **argv) {
 
     // initialize ports
     const uint16_t nbports = rte_eth_dev_count_avail();
+    dpdk_nbports = nbports;
     if (nbports <= 0) {
        rte_exit(EXIT_FAILURE, "No ports available\n"); 
     }
@@ -533,6 +694,7 @@ static int dpdk_init(int argc, char **argv) {
         rte_exit(EXIT_FAILURE, "Was not able to initialize mbuf_pool.\n");
     }
 
+    rte_mempool_obj_iter(mbuf_pool, &custom_pkt_init, NULL);
     // initialize all ports
     uint16_t i = 0;
     uint16_t port_id = 0;
@@ -555,7 +717,7 @@ static int dpdk_init(int argc, char **argv) {
     if (rte_lcore_count() > 1) {
         printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
     }
-
+    
     return args_parsed;
 }
 
@@ -594,14 +756,15 @@ static int parse_packet(struct sockaddr_in *src,
 
     rte_eth_macaddr_get(our_dpdk_port_id, &mac_addr);
     if (!rte_is_same_ether_addr(&mac_addr, &eth_hdr->d_addr) && !rte_is_same_ether_addr(&ether_broadcast, &eth_hdr->d_addr)) {
-        /*printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+        printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-            &eth_hdr->d_addr.addr_bytes[0], &eth_hdr->d_addr.addr_bytes[1],
-			&eth_hdr->d_addr.addr_bytes[2], &eth_hdr->d_addr.addr_bytes[3],
-			&eth_hdr->d_addr.addr_bytes[4], &eth_hdr->d_addr.addr_bytes[5]);*/
+            eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
+			eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
+			eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
         return 1;
     }
     if (RTE_ETHER_TYPE_IPV4 != eth_type) {
+        printf("Bad ether type");
         return 1;
     }
 
@@ -744,9 +907,8 @@ static int do_client(void) {
                 if (valid == 0) {
                     /* parse the timestamp and record it */
                     uint64_t now = (uint64_t)time_now(clock_offset);
-                    // printf("Got a packet at time now: %u\n", (unsigned)(now));
+                    //printf("Got a packet at time now: %u\n", (unsigned)(now));
                     uint64_t then = (*(uint64_t *)payload);
-                    // printf("Received a packet with %u RTT\n", (unsigned)(now - then));
                     add_latency(&latency_dist, now - then);
                     rte_pktmbuf_free(pkts[i]);
                     outstanding--;
@@ -768,19 +930,34 @@ static int do_client(void) {
 }
 
 static int do_server(void) {
+    // initialize external memory
+    void *ext_mem_addr = NULL;
+    if (memory_mode == MEM_EXT) {
+        int ret = init_ext_mem(&ext_mem_addr);
+        if (ret != 0) {
+            printf("Error in extmem init: %d\n", ret);
+        }
+    }
+
     printf("Starting server program\n");
     struct rte_mbuf *rx_bufs[BURST_SIZE];
     struct rte_mbuf *tx_bufs[BURST_SIZE];
-    struct rte_mbuf *buf;
+    struct rte_mbuf *secondary_tx_bufs[BURST_SIZE];
+    struct rte_mbuf *rx_buf;
     uint8_t queue = 0; // our application only uses one queue
     
     uint16_t nb_rx, n_to_tx, nb_tx, i;
-    struct rte_ether_hdr *ptr_mac_hdr;
-    struct rte_ether_addr src_addr;
-    struct rte_ipv4_hdr *ptr_ipv4_hdr;
-    struct rte_udp_hdr *rte_udp_hdr;
-    uint32_t src_ip_addr;
-    uint16_t tmp_port;
+    struct rte_ether_hdr *rx_ptr_mac_hdr;
+    struct rte_ipv4_hdr *rx_ptr_ipv4_hdr;
+    struct rte_udp_hdr *rx_rte_udp_hdr;
+    struct rte_ether_hdr *tx_ptr_mac_hdr;
+    struct rte_ipv4_hdr *tx_ptr_ipv4_hdr;
+    struct rte_udp_hdr *tx_rte_udp_hdr;
+    uint64_t *tx_buf_id_ptr;
+    uint64_t *rx_buf_id_ptr;
+    //struct rte_ether_addr src_addr;
+    //uint32_t src_ip_addr;
+    //uint16_t tmp_port;
 
     /* Run until the application is quit or killed. */
     for (;;) {
@@ -794,31 +971,109 @@ static int do_server(void) {
             void *payload = NULL;
             size_t payload_length = 0;
             int valid = parse_packet(&src, &dst, &payload, &payload_length, rx_bufs[i]);
+            struct rte_mbuf* secondary = NULL;
             if (valid == 0) {
+                rx_buf = rx_bufs[i];
+                size_t header_size = rx_buf->pkt_len - (payload_length + 8);
+                payload_length -= 8;
                 // echo the packet back
-                buf = rx_bufs[i];
+                if (memory_mode == MEM_EXT) {
+                    if (num_mbufs == 1) {
+                        // just one mbuf, which has header in it
+                        tx_bufs[n_to_tx] = rte_pktmbuf_alloc(extbuf_mempool);
+                        // TODO: check if you can init with non
+                        // beginning/aligned address
+                        rte_pktmbuf_attach_extbuf(tx_bufs[n_to_tx], ext_mem_addr, 0, payload_length, shinfo);
+                    } else {
+                        // two mbufs, two different mempools
+                        tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
+                        secondary_tx_bufs[n_to_tx] = rte_pktmbuf_alloc(extbuf_mempool);
+                        // attach at beginning of ext_mem_addr, but assume some
+                        // of the data is in the first mbuf
+                        void *attach_addr = (void *)((char *)ext_mem_addr + (header_size + header_payload_size));
+                        rte_pktmbuf_attach_extbuf(secondary_tx_bufs[n_to_tx], attach_addr, 0, payload_length - header_payload_size, shinfo);
+                    }
+                } else {
+                    if (num_mbufs == 1) {
+                        tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
+                    } else {
+                        tx_bufs[n_to_tx] = rte_pktmbuf_alloc(header_mempool);
+                        secondary_tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
+                    }
+                }
+
+                struct rte_mbuf* tx_buf = tx_bufs[n_to_tx];
+                secondary = secondary_tx_bufs[n_to_tx];
+
+                if (tx_buf == NULL) {
+                    printf("Error first allocating tx mbuf\n");
+                    return -EINVAL;
+                }
+
+                if (num_mbufs == 2) {
+                    if (secondary == NULL) {
+                        printf("Error allocating secondary mbuf\n");
+                        return -EINVAL;
+                    }
+                }
+
 
                 /* swap src and dst ether addresses */
-                ptr_mac_hdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr *);
-                rte_ether_addr_copy(&ptr_mac_hdr->s_addr, &src_addr);
-				rte_ether_addr_copy(&ptr_mac_hdr->d_addr, &ptr_mac_hdr->s_addr);
-				rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->d_addr);
+                rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
+                tx_ptr_mac_hdr = rte_pktmbuf_mtod(tx_buf, struct rte_ether_hdr *);
+                rte_ether_addr_copy(&rx_ptr_mac_hdr->s_addr, &tx_ptr_mac_hdr->d_addr);
+				rte_ether_addr_copy(&rx_ptr_mac_hdr->d_addr, &tx_ptr_mac_hdr->s_addr);
+				// rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->d_addr);
+                tx_ptr_mac_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
                 /* swap src and dst ip addresses */
-                ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(buf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
-                src_ip_addr = ptr_ipv4_hdr->src_addr;
-                ptr_ipv4_hdr->src_addr = ptr_ipv4_hdr->dst_addr;
-                ptr_ipv4_hdr->dst_addr = src_ip_addr;
-                ptr_ipv4_hdr->hdr_checksum = 0;
+                //src_ip_addr = rx_ptr_ipv4_hdr->src_addr;
+                rx_ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
+                tx_ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(tx_buf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
+                tx_ptr_ipv4_hdr->src_addr = rx_ptr_ipv4_hdr->dst_addr;
+                tx_ptr_ipv4_hdr->dst_addr = rx_ptr_ipv4_hdr->src_addr;
+
+                tx_ptr_ipv4_hdr->hdr_checksum = 0;
+                tx_ptr_ipv4_hdr->version_ihl = IP_VHL_DEF;
+                tx_ptr_ipv4_hdr->type_of_service = 0;
+                tx_ptr_ipv4_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_length);
+                tx_ptr_ipv4_hdr->packet_id = 0;
+                tx_ptr_ipv4_hdr->fragment_offset = 0;
+                tx_ptr_ipv4_hdr->time_to_live = IP_DEFTTL;
+                tx_ptr_ipv4_hdr->next_proto_id = IPPROTO_UDP;
+                /* offload checksum computation in hardware */
+                tx_ptr_ipv4_hdr->hdr_checksum = 0;
 
                 /* Swap UDP ports */
-                rte_udp_hdr = rte_pktmbuf_mtod_offset(buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
-                tmp_port = rte_udp_hdr->src_port;
-                rte_udp_hdr->src_port = rte_udp_hdr->dst_port;
-                rte_udp_hdr->dst_port = tmp_port;
+                rx_rte_udp_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+                tx_rte_udp_hdr = rte_pktmbuf_mtod_offset(tx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+                //tmp_port = rte_udp_hdr->src_port;
+                tx_rte_udp_hdr->src_port = rx_rte_udp_hdr->dst_port;
+                tx_rte_udp_hdr->dst_port = rx_rte_udp_hdr->src_port;
+                tx_rte_udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_length);
+                tx_rte_udp_hdr->dgram_cksum = 0;
 
-                tx_bufs[n_to_tx] = buf;
+                /* Set packet id */
+                tx_buf_id_ptr = rte_pktmbuf_mtod_offset(tx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
+                rx_buf_id_ptr = rte_pktmbuf_mtod_offset(rx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
+                *tx_buf_id_ptr = *rx_buf_id_ptr;
+
+                /* Set metadata */
+                tx_buf->l2_len = RTE_ETHER_HDR_LEN;
+                tx_buf->l3_len = sizeof(struct rte_ipv4_hdr);
+                tx_buf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+                tx_buf->data_len = header_size + payload_length;
+                tx_buf->pkt_len = header_size + payload_length;
+                tx_buf->nb_segs = 1;
+
+                if (num_mbufs == 2) {
+                    tx_buf->next = secondary;
+                    tx_buf->nb_segs = 2;
+                    tx_buf->data_len = header_size + header_payload_size;
+                    secondary->data_len = payload_length - header_payload_size;
+                }
                 n_to_tx++;
+                rte_pktmbuf_free(rx_bufs[i]);
                 continue;
             } else {
                 rte_pktmbuf_free(rx_bufs[i]);
