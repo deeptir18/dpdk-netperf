@@ -5,7 +5,11 @@ app](https://github.com/shenango/shenango/tree/master/apps/dpdk_netperf) and
 
 ## Compilation and setup:
 1. Make sure DPDK is compiled. This application has been tested with DPDK
-   version 19.08, and should be compatible with any 19 versions.
+   version 19.08, and should be compatible with any 19 versions. Currently, the
+code requires applying this patch to DPDK and recompiling DPDK:
+```
+git apply mlx5_registration.patch
+```
 2. Similar to running the DPDK helloworld application, please define the RTE_SDK
    environment variable with the path to DPDK:
 ```
@@ -21,9 +25,7 @@ export RTE_TARGET=x86_64-native-linuxapp-gcc
    build/netperf.
 5. Make sure huge pages are initialized; otherwise the application will fail.
 6. Both the server and client must be run as root.
-7. This currently depends on a patch to DPDK to try out manual memory
-   registration. The patch is included in this repo.
-8. I have also tried copy pasting this folder into the applications folder within a DPDK 20 repository (which uses ninja and meson for compilation), and with minimal changes, it will also work there.
+7. I have also tried copy pasting this folder into the applications folder within a DPDK 20 repository (which uses ninja and meson for compilation), and with minimal changes, it will also work there. Note that you would also need to apply a patch to that DPDK as well/
 
 ## Running the server:
 The server command line should look something like:
