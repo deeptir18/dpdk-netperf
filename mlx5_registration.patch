@@ -1,6 +1,6 @@
-commit 027039992381c579012ca64437fa911270d69d83
+commit c072e64f540b1a75eb52083f236753f4da7a893b
 Author: deeptir <deeptir@cs.stanford.edu>
-Date:   Mon Mar 29 18:26:08 2021 -0700
+Date:   Mon Mar 29 19:29:22 2021 -0700
 
     patch
 
@@ -35,6 +35,19 @@ index c5cf4397a..80ebc8671 100644
  SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxq.c
  SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_txq.c
  SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxtx.c
+diff --git a/drivers/net/mlx5/mlx5_custom.h b/drivers/net/mlx5/mlx5_custom.h
+new file mode 100644
+index 000000000..2900191d1
+--- /dev/null
++++ b/drivers/net/mlx5/mlx5_custom.h
+@@ -0,0 +1,7 @@
++#ifndef RTE_PMD_MLX5_CUSTOM_H
++#define RTE_PMD_MLX5_CUSTOM_H
++
++void *mlx5_manual_reg_mr(uint8_t port_id, void *addr, size_t length, uint32_t *lkey_out);
++void mlx5_manual_dereg_mr(void *ibv_mr);
++
++#endif /* RTE_PMD_MLX5_CUSTOM_H */
 diff --git a/drivers/net/mlx5/mlx5_mr.c b/drivers/net/mlx5/mlx5_mr.c
 index 0d549b68e..27f1e5bbf 100644
 --- a/drivers/net/mlx5/mlx5_mr.c
