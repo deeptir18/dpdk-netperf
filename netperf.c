@@ -46,6 +46,7 @@ typedef unsigned long virtaddr_t;
 /******************************************/
 /******************************************/
 #define MAX_ITERATIONS 100000000
+#define PORT_ID 0
 typedef struct Latency_Dist_t
 {
     uint64_t min, max;
@@ -59,6 +60,28 @@ struct tx_pktmbuf_priv
 {
     int32_t lkey;
     int32_t field2; // needs to be atleast 8 bytes large
+};
+
+// The RSS Key and port configuration for multithreading
+uint8_t sym_rss_key[] = {
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+    0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
+};
+static struct rte_eth_conf port_conf = {
+    .rxmode = {
+        .mq_mode = ETH_MQ_RX_RSS,
+        .max_rx_pkt_len = RTE_ETHER_MAX_LEN,  // 1518 
+    },
+    .rx_adv_conf = {
+        .rss_conf = {
+            .rss_key = sym_rss_key,
+            .rss_key_len = 40,
+            .rss_hf = ETH_RSS_IP | ETH_RSS_TCP | ETH_RSS_UDP
+        },
+    },
 };
 
 static void add_latency(Latency_Dist_t *dist, uint64_t latency) {
@@ -707,33 +730,6 @@ out:
 static int init_ext_mem(void **ext_mem_addr) {
     size_t page_size = PAGE_SIZE;
     size_t num_pages = 100;
-    /*void * addr = mmap(NULL, page_size * num_pages, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED , -1, 0);
-    if (addr == MAP_FAILED) {
-        printf("Failed to mmap memory\n");
-        return 1;
-    }
-
-    // next, register this external memory
-    int ret = rte_extmem_register(addr, (uint16_t)(page_size * num_pages), NULL, 0, page_size);
-    if (ret != 0) {
-        printf("Register err: %s\n", rte_strerror(rte_errno));
-        return ret;
-    }
-
-    uint16_t pid = 0;
-    RTE_ETH_FOREACH_DEV(pid) {
-        struct rte_eth_dev *dev = &rte_eth_devices[pid];
-        ret = rte_dev_dma_map(dev->device, addr, 0, (uint16_t)(page_size * num_pages));
-        if (ret != 0) {
-            printf("DMA map errno: %s\n", rte_strerror(rte_errno));
-            return ret;
-        }
-    }
-    memset((char *)addr, 'D', page_size * num_pages);
-    uint16_t buf_len = (uint16_t)(page_size * num_pages);
-    shinfo = rte_pktmbuf_ext_shinfo_init_helper(addr, &buf_len, free_external_buffer_callback, NULL);
-    printf("Finished registering external memory\n");
-    *ext_mem_addr = addr;*/
     void *addr = rte_malloc("Serialization_Memory", page_size * num_pages, 0);
     if (addr == NULL) {
         printf("Rte malloc failed\n");
@@ -952,6 +948,7 @@ static uint64_t time_now(uint64_t offset) {
     return raw_time() - offset;
 }
 
+/*TODO: WHAT DOES THIS DO OTHER THAN HIGH LEVEL UNDERSTANDING?*/
 static int parse_packet(struct sockaddr_in *src,
                         struct sockaddr_in *dst,
                         void **payload,
@@ -1051,6 +1048,11 @@ uint64_t rte_get_timer_hz_() {
 
 void rte_pktmbuf_attach_extbuf_(struct rte_mbuf *m, void *buf_addr, rte_iova_t buf_iova, uint16_t buf_len, struct rte_mbuf_ext_shared_info *shinfo) {
     rte_pktmbuf_attach_extbuf(m, buf_addr, buf_iova, buf_len, shinfo);
+}
+
+static void recv_threads() {
+    int lcore_id = rte_lcore_id();
+    uint16_t q = lcore_id - 1;
 }
 
 static int do_client(void) {
@@ -1177,19 +1179,63 @@ static int do_client(void) {
     return 0;
 }
 
+//TODO CHECK DEPENDENCIES
+// RSS = Receive Side Scaling <-- provides the interface for hash functions
+// determine what function it's coming from
+static void initialize_queues() {
+    // Number of multithreadable execution units in the system
+    int nb_workers = rte_lcore_count() - 1;
+    ret = rte_eth_dev_configure(PORT_ID, nb_workers, nb_workers, &port_conf);
+    if (ret < 0) {
+        rte_exit(EXIT_FAILURE, "Port configuration failed.\n");
+    }
+    uint8_t q = 0;
+
+    // macro
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
+        rte_eth_rx_queue_setup(PORT_ID, q, NB_RX_DESC, 
+            rte_eth_dev_socket_id(PORT_ID), NULL, mbufpool);
+        q++;
+    }
+}
+
+static void dispatch_threads(int n /*number of machines*/) {
+  /*CONTENT*/
+}
+
+/* What should the setup of do server be?
+ * 1. Enumerate the number of ports (rte_eth_dev_count_avail)
+ *    Check that you are using the correct number of ports (Each core communicates with 2 or 3? other cores)
+ * 2. Initialize mbufpool: mbufpool_init()
+ * 3. Initializes ports (not port_init but something else)
+ * 4. Set all ports to be promiscuous
+ * 5. rte_eth_dev_start: Pass in all port IDs
+ * 6. Starting the server program by creating a series of buffers
+ * 7. Initialize all the multithreaded queues
+ */
 static int do_server(void) {
+    /*Start of Server setup in Main thread*/
     // initialize external memory
+    /*
+     * Define the variables:
+     * ext_mem_addr: external memory address?
+     * paddrs_mem: Stores physical addresses
+     * lkey:
+     * ext_mem_phys_addr:
+     */
     void *ext_mem_addr = NULL;
     void *paddrs_mem = malloc(sizeof(physaddr_t) * 100);
     int32_t lkey = -1;
     if (paddrs_mem == NULL) {
         printf("Error malloc'ing paddr for storing physical addresses.\n");
-        return ENOMEM;
+        return ENOMEM; /* Out of memory */
     }
     physaddr_t *paddrs = (physaddr_t *)paddrs_mem;
     void *ext_mem_phys_addr = NULL;
+    
+    /* Memory mode: MEM_EXIT */
     if (memory_mode == MEM_EXT) {
-        int ret = init_ext_mem(&ext_mem_addr);
+        int ret = init_ext_mem(&ext_mem_addr); // Initializes serialization memory
         if (ret != 0) {
             printf("Error in extmem init: %d\n", ret);
             return ret;
@@ -1204,20 +1250,24 @@ static int do_server(void) {
             return ret;
         }
     }
+    /*End of Server setup in Main Thread*/
 
     printf("Starting server program\n");
     struct rte_mbuf *rx_bufs[BURST_SIZE];
     struct rte_mbuf *tx_bufs[BURST_SIZE];
     struct rte_mbuf *secondary_tx_bufs[BURST_SIZE];
     struct rte_mbuf *rx_buf;
-    uint8_t queue = 0; // our application only uses one queue
+    
+    //TODO: Does more than one queue need to be used with multiple threads?
+    // TODO: ONE QUEUE PER CORE
+    initialize_queues(); // our application uses # core -1
     
     uint16_t nb_rx, n_to_tx, nb_tx, i;
     struct rte_ether_hdr *rx_ptr_mac_hdr;
-    struct rte_ipv4_hdr *rx_ptr_ipv4_hdr;
-    struct rte_udp_hdr *rx_rte_udp_hdr;
     struct rte_ether_hdr *tx_ptr_mac_hdr;
+    struct rte_ipv4_hdr *rx_ptr_ipv4_hdr;
     struct rte_ipv4_hdr *tx_ptr_ipv4_hdr;
+    struct rte_udp_hdr *rx_rte_udp_hdr;
     struct rte_udp_hdr *tx_rte_udp_hdr;
     uint64_t *tx_buf_id_ptr;
     uint64_t *rx_buf_id_ptr;
@@ -1227,6 +1277,7 @@ static int do_server(void) {
 
     /* Run until the application is quit or killed. */
     for (;;) {
+        // Sets the port, provides a queue and buffers
         nb_rx = rte_eth_rx_burst(our_dpdk_port_id, queue, rx_bufs, BURST_SIZE);
         if (nb_rx == 0) {
             continue;
@@ -1237,6 +1288,7 @@ static int do_server(void) {
             void *payload = NULL;
             size_t payload_length = 0;
             int valid = parse_packet(&src, &dst, &payload, &payload_length, rx_bufs[i]);
+            /*rte_mbuf: A type describing a particular segment of the scattered packet*/
             struct rte_mbuf* secondary = NULL;
             if (valid == 0) {
                 rx_buf = rx_bufs[i];
@@ -1404,6 +1456,7 @@ int
 main(int argc, char **argv)
 {
 	int ret;
+    // Initializes the EAL
     int args_parsed = dpdk_init(argc, argv);
     argc -= args_parsed;
     argv += args_parsed;
@@ -1414,12 +1467,13 @@ main(int argc, char **argv)
         return ret;
     }
 
+    /**** DO NOT NEED TO ALTER ANYTHING ABOVE THIS LINE ****/
+
     if (mode == MODE_UDP_CLIENT) {
         return do_client();
     } else {
         do_server();
     }
-
 
     printf("Reached end of program execution\n");
 
