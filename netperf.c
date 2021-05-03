@@ -1316,8 +1316,6 @@ static void dispatch_threads () {
                         return -EINVAL;
                     }
                 }
-
-
                 /* swap src and dst ether addresses */
                 rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
                 tx_ptr_mac_hdr = rte_pktmbuf_mtod(tx_buf, struct rte_ether_hdr *);
