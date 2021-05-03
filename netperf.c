@@ -391,6 +391,9 @@ static void print_usage(void) {
     printf("To run server: netperf <EAL_INIT> -- --mode=SERVER --ip=<SERVER_IP> --memory=<EXTERNAL,DPDK,MANUAL,MANUAL_DPDK> --num_mbufs=<INT> --header_payload=<INT>\n");
 }
 
+/*
+ * Create private tx packet mbuf  
+ */
 static inline struct tx_pktmbuf_priv *tx_pktmbuf_get_priv(struct rte_mbuf *buf)
 {
 	return (struct tx_pktmbuf_priv *)(((char *)buf)
@@ -1025,6 +1028,7 @@ static uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rt
     return rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts);
 }
 
+/* Why the function with the extra _ ? */
 void rte_pktmbuf_free_(struct rte_mbuf *packet) {
     rte_pktmbuf_free(packet);
 }
@@ -1182,7 +1186,7 @@ static int do_client(void) {
 //TODO CHECK DEPENDENCIES
 // RSS = Receive Side Scaling <-- provides the interface for hash functions
 // determine what function it's coming from
-static void initialize_queues() {
+static uint8_t initialize_queues() {
     // Number of multithreadable execution units in the system
     int nb_workers = rte_lcore_count() - 1;
     ret = rte_eth_dev_configure(PORT_ID, nb_workers, nb_workers, &port_conf);
@@ -1197,12 +1201,211 @@ static void initialize_queues() {
             rte_eth_dev_socket_id(PORT_ID), NULL, mbufpool);
         q++;
     }
+    return q;
 }
 
-static void dispatch_threads(int n /*number of machines*/) {
-  /*CONTENT*/
+static void fake_dispatch_threads(int n /*number of machines*/) {
+    struct rte_mbuf *mbufs[32];
+    uint16_t i, q, nb_rx;
+    int lcore_id = rte_lcore_id();
+    q = lcore_id - 1;
+    printf("Starting RX from core %u (queue %u)...\n", lcore_id, q);
+
+    
+    uint64_t total = 0;
+
+    while (true) {
+        nb_rx = rte_eth_rx_burst(PORT_ID, q, mbufs, 32);
+        for (i = 0; i < nb_rx; i++) {
+            total += 1;
+            rte_pktmbuf_free(mbufs[i]);
+        }
+    }
+
+    printf("Core %u total RX: %lu\n", lcore_id, total);
 }
 
+static void dispatch_threads (/*ADD ARGUMENTS*/) {
+    /* Declare some important variables */
+    uint16_t nb_rx, n_to_tx, nb_tx, i, q;
+    struct rte_mbuf *rx_bufs[BURST_SIZE];
+    q = rte_lcore_id() - 1;
+    printf("Starting RX from core %u (queue %u)...\n", lcore_id, q);
+    /* Run until the application is quit or killed. */
+    for (;;) {
+        // Sets the port, provides a queue and buffers
+        nb_rx = rte_eth_rx_burst(our_dpdk_port_id, q, rx_bufs, BURST_SIZE);
+        if (nb_rx == 0) {
+            continue;
+        }
+        n_to_tx = 0;
+        for (i = 0; i < nb_rx; i++) {
+            struct sockaddr_in src, dst;
+            void *payload = NULL;
+            size_t payload_length = 0;
+            int valid = parse_packet(&src, &dst, &payload, &payload_length, rx_bufs[i]);
+            /*rte_mbuf: A type describing a particular segment of the scattered packet*/
+            struct rte_mbuf* secondary = NULL;
+            if (valid == 0) {
+                rx_buf = rx_bufs[i];
+                size_t header_size = rx_buf->pkt_len - (payload_length);
+                payload_length -= 8;
+                header_size += 8;
+                // echo the packet back
+                if (memory_mode == MEM_EXT) {
+                    if (num_mbufs == 1) {
+                        // just one mbuf, which has header in it
+                        tx_bufs[n_to_tx] = rte_pktmbuf_alloc_(extbuf_mempool);
+                        // TODO: check if you can init with non
+                        // beginning/aligned address
+                        rte_pktmbuf_attach_extbuf_(tx_bufs[n_to_tx], ext_mem_addr, ext_mem_iova, payload_length, shinfo);
+                    } else {
+                        // two mbufs, two different mempools
+                        tx_bufs[n_to_tx] = rte_pktmbuf_alloc_(mbuf_pool);
+                        secondary_tx_bufs[n_to_tx] = rte_pktmbuf_alloc_(extbuf_mempool);
+                        // attach at beginning of ext_mem_addr, but assume some
+                        // of the data is in the first mbuf
+                        rte_pktmbuf_attach_extbuf_(secondary_tx_bufs[n_to_tx], ext_mem_addr, ext_mem_iova, payload_length - header_payload_size, shinfo);
+                    }
+                } else if (memory_mode == MEM_EXT_MANUAL) {
+                    // manually add information about external buffer
+                    void *payload_addr = ext_mem_addr + 4096;
+                    assert(num_mbufs == 2);
+                    tx_bufs[n_to_tx] = rte_pktmbuf_alloc_(mbuf_pool);
+                    secondary_tx_bufs[n_to_tx] = rte_pktmbuf_alloc_(extbuf_mempool);
+                    secondary_tx_bufs[n_to_tx]->buf_addr = (char *)(payload_addr);
+                    uint32_t page_number = PGN_2MB((uintptr_t)payload_addr - (uintptr_t)ext_mem_addr);
+                    secondary_tx_bufs[n_to_tx]->buf_physaddr = paddrs[page_number] + PGOFF_2MB(payload_addr);
+                    secondary_tx_bufs[n_to_tx]->buf_iova = paddrs[page_number] + PGOFF_2MB(payload_addr);
+                    secondary_tx_bufs[n_to_tx]->data_off = 0;
+                    rte_mbuf_refcnt_set(secondary_tx_bufs[n_to_tx], 1);
+                    struct tx_pktmbuf_priv *priv_data =  tx_pktmbuf_get_priv(secondary_tx_bufs[n_to_tx]);
+                    priv_data->lkey = lkey;
+                } else if (memory_mode == MEM_EXT_MANUAL_DPDK) {
+                    tx_bufs[n_to_tx] = rte_pktmbuf_alloc_(header_mempool);
+                    secondary_tx_bufs[n_to_tx] = rte_pktmbuf_alloc_(extbuf_mempool);
+                    /*extra_mbufs[n_to_tx] = rte_pktmbuf_alloc_(mbuf_pool);
+                    secondary_tx_bufs[n_to_tx]->buf_addr = extra_mbufs[n_to_tx]->buf_addr;
+                    secondary_tx_bufs[n_to_tx]->buf_physaddr = extra_mbufs[n_to_tx]->buf_physaddr;
+                    secondary_tx_bufs[n_to_tx]->data_off = extra_mbufs[n_to_tx]->data_off;
+                    secondary_tx_bufs[n_to_tx]->buf_iova = extra_mbufs[n_to_tx]->buf_iova;*/
+                    secondary_tx_bufs[n_to_tx]->buf_addr = (void *)((char *)(rx_bufs[n_to_tx]->buf_addr) + header_size);
+                    secondary_tx_bufs[n_to_tx]->buf_iova = (void *)((char *)(rx_bufs[n_to_tx]->buf_iova) + header_size);
+                    secondary_tx_bufs[n_to_tx]->data_off = rx_bufs[n_to_tx]->data_off;
+                    secondary_tx_bufs[n_to_tx]->buf_physaddr = (void *)((char *)(rx_bufs[n_to_tx]->buf_physaddr) + header_size);
+                    rte_mbuf_refcnt_set(secondary_tx_bufs[n_to_tx], 1);
+                    struct tx_pktmbuf_priv *priv_data =  tx_pktmbuf_get_priv(secondary_tx_bufs[n_to_tx]);
+                    priv_data->lkey = -1;
+                } else {
+                    // normal DPDK memory
+                    if (num_mbufs == 1) {
+                        tx_bufs[n_to_tx] = rte_pktmbuf_alloc_(mbuf_pool);
+                        if (zero_copy_mode != 1) {
+                            char *pkt_buf = (char *)(rte_pktmbuf_mtod_offset(tx_bufs[n_to_tx], char *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN + 8));
+                            rte_memcpy(pkt_buf, (char *)(payload_to_copy), payload_length);
+                        }
+                    } else {
+                        tx_bufs[n_to_tx] = rte_pktmbuf_alloc_(header_mempool);
+                        secondary_tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
+                        if (zero_copy_mode != 1) {
+                            char *pkt_buf = (char *)(rte_pktmbuf_mtod_offset(secondary_tx_bufs[n_to_tx], char *, 0));
+                            rte_memcpy(pkt_buf, (char *)payload_to_copy, payload_length);
+                        }
+                    }
+                }
+
+                struct rte_mbuf* tx_buf = tx_bufs[n_to_tx];
+                secondary = secondary_tx_bufs[n_to_tx];
+
+                if (tx_buf == NULL) {
+                    printf("Error first allocating tx mbuf\n");
+                    return -EINVAL;
+                }
+
+                if (num_mbufs == 2) {
+                    if (secondary == NULL) {
+                        printf("Error allocating secondary mbuf\n");
+                        return -EINVAL;
+                    }
+                }
+
+
+                /* swap src and dst ether addresses */
+                rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
+                tx_ptr_mac_hdr = rte_pktmbuf_mtod(tx_buf, struct rte_ether_hdr *);
+                rte_ether_addr_copy(&rx_ptr_mac_hdr->s_addr, &tx_ptr_mac_hdr->d_addr);
+				rte_ether_addr_copy(&rx_ptr_mac_hdr->d_addr, &tx_ptr_mac_hdr->s_addr);
+				// rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->d_addr);
+                tx_ptr_mac_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+
+                /* swap src and dst ip addresses */
+                //src_ip_addr = rx_ptr_ipv4_hdr->src_addr;
+                rx_ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
+                tx_ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(tx_buf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
+                tx_ptr_ipv4_hdr->src_addr = rx_ptr_ipv4_hdr->dst_addr;
+                tx_ptr_ipv4_hdr->dst_addr = rx_ptr_ipv4_hdr->src_addr;
+
+                tx_ptr_ipv4_hdr->hdr_checksum = 0;
+                tx_ptr_ipv4_hdr->version_ihl = IP_VHL_DEF;
+                tx_ptr_ipv4_hdr->type_of_service = 0;
+                tx_ptr_ipv4_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_length);
+                tx_ptr_ipv4_hdr->packet_id = 0;
+                tx_ptr_ipv4_hdr->fragment_offset = 0;
+                tx_ptr_ipv4_hdr->time_to_live = IP_DEFTTL;
+                tx_ptr_ipv4_hdr->next_proto_id = IPPROTO_UDP;
+                /* offload checksum computation in hardware */
+                tx_ptr_ipv4_hdr->hdr_checksum = 0;
+
+                /* Swap UDP ports */
+                rx_rte_udp_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+                tx_rte_udp_hdr = rte_pktmbuf_mtod_offset(tx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+                //tmp_port = rte_udp_hdr->src_port;
+                tx_rte_udp_hdr->src_port = rx_rte_udp_hdr->dst_port;
+                tx_rte_udp_hdr->dst_port = rx_rte_udp_hdr->src_port;
+                tx_rte_udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_length);
+                tx_rte_udp_hdr->dgram_cksum = 0;
+
+                /* Set packet id */
+                tx_buf_id_ptr = rte_pktmbuf_mtod_offset(tx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
+                rx_buf_id_ptr = rte_pktmbuf_mtod_offset(rx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
+                *tx_buf_id_ptr = *rx_buf_id_ptr;
+
+                /* Set metadata */
+                tx_buf->l2_len = RTE_ETHER_HDR_LEN;
+                tx_buf->l3_len = sizeof(struct rte_ipv4_hdr);
+                tx_buf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+                tx_buf->data_len = header_size + payload_length;
+                tx_buf->pkt_len = header_size + payload_length;
+                tx_buf->nb_segs = 1;
+
+                if (num_mbufs == 2) {
+                    tx_buf->next = secondary;
+                    tx_buf->nb_segs = 2;
+                    tx_buf->data_len = header_size + header_payload_size;
+                    secondary->data_len = payload_length - header_payload_size;
+                }
+                n_to_tx++;
+                if (memory_mode != MEM_EXT_MANUAL_DPDK) {
+                rte_pktmbuf_free_(rx_bufs[i]);
+                }
+                continue;
+            } else {
+                rte_pktmbuf_free_(rx_bufs[i]);
+            }
+        }
+        if (n_to_tx > 0) {
+            nb_tx = rte_eth_tx_burst_(our_dpdk_port_id, queue, tx_bufs, n_to_tx);
+            if (nb_tx != n_to_tx) {
+                printf("error: could not transmit all %u pkts, transmitted %u\n", n_to_tx, nb_tx);
+            }
+            if (memory_mode == MEM_EXT_MANUAL_DPDK) {
+                for (int i = 0; i < nb_tx; i++) {
+                    rte_pktmbuf_free_(rx_bufs[i]);
+                }
+            }
+        }
+    }
+}
 /* What should the setup of do server be?
  * 1. Enumerate the number of ports (rte_eth_dev_count_avail)
  *    Check that you are using the correct number of ports (Each core communicates with 2 or 3? other cores)
@@ -1250,6 +1453,7 @@ static int do_server(void) {
             return ret;
         }
     }
+    uint8_t number_of_queues = initialize_queues(); // our application uses # core -1
     /*End of Server setup in Main Thread*/
 
     printf("Starting server program\n");
@@ -1257,11 +1461,6 @@ static int do_server(void) {
     struct rte_mbuf *tx_bufs[BURST_SIZE];
     struct rte_mbuf *secondary_tx_bufs[BURST_SIZE];
     struct rte_mbuf *rx_buf;
-    
-    //TODO: Does more than one queue need to be used with multiple threads?
-    // TODO: ONE QUEUE PER CORE
-    initialize_queues(); // our application uses # core -1
-    
     uint16_t nb_rx, n_to_tx, nb_tx, i;
     struct rte_ether_hdr *rx_ptr_mac_hdr;
     struct rte_ether_hdr *tx_ptr_mac_hdr;
@@ -1271,10 +1470,14 @@ static int do_server(void) {
     struct rte_udp_hdr *tx_rte_udp_hdr;
     uint64_t *tx_buf_id_ptr;
     uint64_t *rx_buf_id_ptr;
-    //struct rte_ether_addr src_addr;
-    //uint32_t src_ip_addr;
-    //uint16_t tmp_port;
 
+    /* TODO: DO I NEED TO START A PORT OR SOMETHING? */
+
+    /* LAUNCH STUFF ON OTHER CORE */
+    rte_eal_mp_remote_launch(dispatch_threads, NULL, SKIP_MAIN);
+
+
+    /* WHERE DO I MOVE THIS MASSIVE FOR LOOP? */
     /* Run until the application is quit or killed. */
     for (;;) {
         // Sets the port, provides a queue and buffers
