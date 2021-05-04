@@ -37,6 +37,8 @@
 #include <rte_memzone.h>
 #include <rte_malloc.h>
 #include <mlx5_custom.h>
+#include <rte_mbuf.h>
+#include <rte_mempool.h>
 
 #define NNUMA 2
 /******************************************/
@@ -1052,11 +1054,6 @@ uint64_t rte_get_timer_hz_() {
 
 void rte_pktmbuf_attach_extbuf_(struct rte_mbuf *m, void *buf_addr, rte_iova_t buf_iova, uint16_t buf_len, struct rte_mbuf_ext_shared_info *shinfo) {
     rte_pktmbuf_attach_extbuf(m, buf_addr, buf_iova, buf_len, shinfo);
-}
-
-static void recv_threads() {
-    int lcore_id = rte_lcore_id();
-    uint16_t q = lcore_id - 1;
 }
 
 static int do_client(void) {
