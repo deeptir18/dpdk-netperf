@@ -891,6 +891,7 @@ static void initialize_queues() {
             rte_eth_dev_socket_id(PORT_ID), NULL, mbuf_pool);
         q++;
     }
+    printf("Done initializing queues!\n");
 }
 
 static int dpdk_init(int argc, char **argv) {
