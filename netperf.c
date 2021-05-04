@@ -1204,17 +1204,20 @@ static int dispatch_threads () {
         printf("Error malloc'ing paddr for storing physical addresses.\n");
         return ENOMEM; /* Out of memory */
     }
+    printf("Memory 1!\n");
     physaddr_t *paddrs = (physaddr_t *)paddrs_mem;
     void *ext_mem_phys_addr = NULL;
     
     /* Memory mode: MEM_EXIT */
     if (memory_mode == MEM_EXT) {
+        printf("Memory 2!\n");
         int ret = init_ext_mem(&ext_mem_addr); // Initializes serialization memory
         if (ret != 0) {
             printf("Error in extmem init: %d\n", ret);
             return ret;
         }
     } else if (memory_mode == MEM_EXT_MANUAL) {
+        printf("Memory 3!\n");
         int ret = init_ext_mem_manual(&ext_mem_addr, paddrs, &lkey);
         if (ret != 0) {
             printf("Error in extmem manual init: %d\n", ret);
