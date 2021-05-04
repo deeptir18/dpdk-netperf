@@ -1087,6 +1087,7 @@ static int do_client(void) {
     // TODO: add in scaffolding for timing/printing out quick statistics
     start_time = rte_get_timer_cycles();
     int outstanding = 0;
+    printf("Starting cycle while loop!\n");
     while (rte_get_timer_cycles_() < start_time + seconds * rte_get_timer_hz_()) {
         // send a packet
         pkt = rte_pktmbuf_alloc_(mbuf_pool);
