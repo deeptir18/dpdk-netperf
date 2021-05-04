@@ -1193,7 +1193,7 @@ static void initialize_queues() {
     q = 0;
 
     // macros
-    RTE_LCORE_FOREACH_WORKER(lcore_id) {
+    RTE_LCORE_FOREACH_SLAVE(lcore_id) {
         rte_eth_rx_queue_setup(PORT_ID, q, NB_RX_DESC, 
             rte_eth_dev_socket_id(PORT_ID), NULL, mbufpool);
         q++;
