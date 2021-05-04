@@ -1243,7 +1243,7 @@ static void dispatch_threads () {
     uint64_t *tx_buf_id_ptr;
     uint64_t *rx_buf_id_ptr;
     q = rte_lcore_id() - 1;
-    printf("Starting RX from core %u (queue %u)...\n", lcore_id, q);
+    printf("Starting RX from core %u (queue %u)...\n", rte_lcore_id(), q);
     /* Run until the application is quit or killed. */
     for (;;) {
         // Sets the port, provides a queue and buffers
