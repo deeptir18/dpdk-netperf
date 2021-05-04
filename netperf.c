@@ -1198,7 +1198,9 @@ static int do_client(void) {
 static int dispatch_threads () {
     printf("Entering dispatch thread %d!\n", rte_lcore_id());
     void *ext_mem_addr = NULL;
+    printf("Test 1 %d!\n", rte_lcore_id());
     void *paddrs_mem = malloc(sizeof(physaddr_t) * 100);
+    printf("Test 2 %d!\n", rte_lcore_id());
     int32_t lkey = -1;
     if (paddrs_mem == NULL) {
         printf("Error malloc'ing paddr for storing physical addresses.\n");
@@ -1227,7 +1229,7 @@ static int dispatch_threads () {
             return ret;
         }
     }
-    printf("Done with memory declarations\n");
+    // printf("Done with memory declarations\n");
     /* Declare some important variables */
     struct rte_mbuf *rx_bufs[BURST_SIZE];
     struct rte_mbuf *tx_bufs[BURST_SIZE];
@@ -1456,7 +1458,6 @@ static int do_server(void) {
     //         return ret;
     //     }
     // }
-    // initialize_queues(); // our application uses # core -1
     /*End of Server setup in Main Thread*/
 
     printf("Starting server program\n");
