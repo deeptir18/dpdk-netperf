@@ -1201,7 +1201,7 @@ static void initialize_queues() {
     }
 }
 
-static void dispatch_threads () {
+static int dispatch_threads () {
     void *ext_mem_addr = NULL;
     void *paddrs_mem = malloc(sizeof(physaddr_t) * 100);
     int32_t lkey = -1;
