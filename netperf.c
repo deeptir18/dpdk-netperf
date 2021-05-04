@@ -806,8 +806,8 @@ static int wait_for_link_status_up(uint16_t port_id) {
 static int init_dpdk_port(uint16_t port_id, struct rte_mempool *mbuf_pool) {
     printf("Initializing port %u\n", (unsigned)(port_id));
     NETPERF_TRUE(ERANGE, rte_eth_dev_is_valid_port(port_id)); 
-    const uint16_t rx_rings = 1;
-    const uint16_t tx_rings = 1;
+    const uint16_t rx_rings = rte_lcore_count() - 1;
+    const uint16_t tx_rings = 0;
     const uint16_t nb_rxd = RX_RING_SIZE;
     const uint16_t nb_txd = TX_RING_SIZE;
     uint16_t mtu;
