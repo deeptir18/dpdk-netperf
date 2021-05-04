@@ -889,7 +889,6 @@ static void initialize_queues() {
     RTE_LCORE_FOREACH_SLAVE(lcore_id) {
         rte_eth_rx_queue_setup(PORT_ID, q, NB_RX_DESC, 
             rte_eth_dev_socket_id(PORT_ID), NULL, mbuf_pool);
-        printf("Initialized Queue %d\n", q);
         q++;
     }
     printf("Done initializing queues!\n");
@@ -1225,6 +1224,7 @@ static int dispatch_threads () {
             return ret;
         }
     }
+    printf("Done with memory declarations\n");
     /* Declare some important variables */
     struct rte_mbuf *rx_bufs[BURST_SIZE];
     struct rte_mbuf *tx_bufs[BURST_SIZE];
