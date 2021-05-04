@@ -1184,14 +1184,15 @@ static int do_client(void) {
 // determine what function it's coming from
 static void initialize_queues() {
     // Number of multithreadable execution units in the system
-    int nb_workers = rte_lcore_count() - 1;
+    int nb_workers, ret, lcore_id, q;
+    nb_workers = rte_lcore_count() - 1;
     ret = rte_eth_dev_configure(PORT_ID, nb_workers, nb_workers, &port_conf);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "Port configuration failed.\n");
     }
-    uint8_t q = 0;
+    q = 0;
 
-    // macro
+    // macros
     RTE_LCORE_FOREACH_WORKER(lcore_id) {
         rte_eth_rx_queue_setup(PORT_ID, q, NB_RX_DESC, 
             rte_eth_dev_socket_id(PORT_ID), NULL, mbufpool);
