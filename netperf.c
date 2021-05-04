@@ -156,7 +156,7 @@ static void dump_latencies(Latency_Dist_t *dist) {
     printf("\n\t- Median latency: %u ns\n\t- p99 latency: %u ns\n\t- p999 latency: %u ns\n", (unsigned)median, (unsigned)p99, (unsigned)p999);
     printf("------------------------\n");
     printf("Stats with %u removed:\n\t- Min latency: %u ns\n\t- Max latency: %u ns\n", (unsigned)amt_to_remove, (unsigned)min2, (unsigned)max2);
-    printf("\n\t- Median latency: %u ns\n\t- p99 latency: %u ns\n\t- p999 latency: %u ns\n\t- Avg latency: %" PRIu64 "ns\n", (unsigned)median2, (unsigned)p992, (unsigned)p9992, (unsigned)average2);
+    printf("\n\t- Median latency: %u ns\n\t- p99 latency: %u ns\n\t- p999 latency: %u ns\n\t- Avg latency: %u ns\n" /*PRIu64*/, (unsigned)median2, (unsigned)p992, (unsigned)p9992, (unsigned)average2);
     /*FILE *fp = fopen ("tmp.log", "w");
     for (int i = 0; i < dist->total_count; i++) {
         fprintf(fp, "%u\n", dist->latencies[i]);
