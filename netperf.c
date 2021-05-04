@@ -1432,7 +1432,7 @@ static int do_server(void) {
     /*End of Server setup in Main Thread*/
 
     printf("Starting server program\n");
-    rte_eal_mp_remote_launch(dispatch_threads, NULL, SKIP_MAIN);
+    rte_eal_mp_remote_launch(dispatch_threads, NULL, /*SKIP_MAIN*/ 0);
     return 0;
 }
 
