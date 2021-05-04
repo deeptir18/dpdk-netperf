@@ -1462,6 +1462,8 @@ static int do_server(void) {
 
     printf("Starting server program\n");
     rte_eal_mp_remote_launch(dispatch_threads, NULL, /*SKIP_MAIN*/ 0);
+    printf("In main_thread!\n");
+    rte_eal_mp_wait_lcore();
     return 0;
 }
 
