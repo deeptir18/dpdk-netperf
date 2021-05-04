@@ -1201,6 +1201,33 @@ static void initialize_queues() {
 }
 
 static void dispatch_threads () {
+    void *ext_mem_addr = NULL;
+    void *paddrs_mem = malloc(sizeof(physaddr_t) * 100);
+    int32_t lkey = -1;
+    if (paddrs_mem == NULL) {
+        printf("Error malloc'ing paddr for storing physical addresses.\n");
+        return ENOMEM; /* Out of memory */
+    }
+    physaddr_t *paddrs = (physaddr_t *)paddrs_mem;
+    void *ext_mem_phys_addr = NULL;
+    
+    /* Memory mode: MEM_EXIT */
+    if (memory_mode == MEM_EXT) {
+        int ret = init_ext_mem(&ext_mem_addr); // Initializes serialization memory
+        if (ret != 0) {
+            printf("Error in extmem init: %d\n", ret);
+            return ret;
+        }
+    } else if (memory_mode == MEM_EXT_MANUAL) {
+        int ret = init_ext_mem_manual(&ext_mem_addr, paddrs, &lkey);
+        if (ret != 0) {
+            printf("Error in extmem manual init: %d\n", ret);
+            return ret;
+        } else if (lkey == -1) {
+            printf("Lkey still -1\n");
+            return ret;
+        }
+    }
     /* Declare some important variables */
     struct rte_mbuf *rx_bufs[BURST_SIZE];
     struct rte_mbuf *tx_bufs[BURST_SIZE];
@@ -1402,33 +1429,33 @@ static void dispatch_threads () {
  */
 static int do_server(void) {
     /*Start of Server setup in Main thread*/
-    void *ext_mem_addr = NULL;
-    void *paddrs_mem = malloc(sizeof(physaddr_t) * 100);
-    int32_t lkey = -1;
-    if (paddrs_mem == NULL) {
-        printf("Error malloc'ing paddr for storing physical addresses.\n");
-        return ENOMEM; /* Out of memory */
-    }
-    physaddr_t *paddrs = (physaddr_t *)paddrs_mem;
-    void *ext_mem_phys_addr = NULL;
+    // void *ext_mem_addr = NULL;
+    // void *paddrs_mem = malloc(sizeof(physaddr_t) * 100);
+    // int32_t lkey = -1;
+    // if (paddrs_mem == NULL) {
+    //     printf("Error malloc'ing paddr for storing physical addresses.\n");
+    //     return ENOMEM; /* Out of memory */
+    // }
+    // physaddr_t *paddrs = (physaddr_t *)paddrs_mem;
+    // void *ext_mem_phys_addr = NULL;
     
-    /* Memory mode: MEM_EXIT */
-    if (memory_mode == MEM_EXT) {
-        int ret = init_ext_mem(&ext_mem_addr); // Initializes serialization memory
-        if (ret != 0) {
-            printf("Error in extmem init: %d\n", ret);
-            return ret;
-        }
-    } else if (memory_mode == MEM_EXT_MANUAL) {
-        int ret = init_ext_mem_manual(&ext_mem_addr, paddrs, &lkey);
-        if (ret != 0) {
-            printf("Error in extmem manual init: %d\n", ret);
-            return ret;
-        } else if (lkey == -1) {
-            printf("Lkey still -1\n");
-            return ret;
-        }
-    }
+    // /* Memory mode: MEM_EXIT */
+    // if (memory_mode == MEM_EXT) {
+    //     int ret = init_ext_mem(&ext_mem_addr); // Initializes serialization memory
+    //     if (ret != 0) {
+    //         printf("Error in extmem init: %d\n", ret);
+    //         return ret;
+    //     }
+    // } else if (memory_mode == MEM_EXT_MANUAL) {
+    //     int ret = init_ext_mem_manual(&ext_mem_addr, paddrs, &lkey);
+    //     if (ret != 0) {
+    //         printf("Error in extmem manual init: %d\n", ret);
+    //         return ret;
+    //     } else if (lkey == -1) {
+    //         printf("Lkey still -1\n");
+    //         return ret;
+    //     }
+    // }
     initialize_queues(); // our application uses # core -1
     /*End of Server setup in Main Thread*/
 
