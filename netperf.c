@@ -883,7 +883,7 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool *mbuf_pool) {
 static int dpdk_init(int argc, char **argv) {
     
     // initialize Environment Abstraction Layer
-    // our arguments: "-c", "0xff", "-n", "4", "-w", "0000:37:00.0","--proc-type=auto"
+    // our arguments: "-c", "0xff", "-n", "4", "-w", "0000:31:00.0","--proc-type=auto"
     int args_parsed = rte_eal_init(argc, argv);
     if (args_parsed < 0) {
         rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
@@ -934,10 +934,10 @@ static int dpdk_init(int argc, char **argv) {
 			my_eth.addr_bytes[2], my_eth.addr_bytes[3],
 			my_eth.addr_bytes[4], my_eth.addr_bytes[5]);
 
-
-    if (rte_lcore_count() > 1) {
-        printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
-    }
+    initialize_queues();
+    // if (rte_lcore_count() > 1) {
+    //     printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
+    // }
     
     return args_parsed;
 }
@@ -1202,6 +1202,7 @@ static void initialize_queues() {
 }
 
 static int dispatch_threads () {
+    printf("Entering dispatch threads!\n");
     void *ext_mem_addr = NULL;
     void *paddrs_mem = malloc(sizeof(physaddr_t) * 100);
     int32_t lkey = -1;
@@ -1457,7 +1458,7 @@ static int do_server(void) {
     //         return ret;
     //     }
     // }
-    initialize_queues(); // our application uses # core -1
+    // initialize_queues(); // our application uses # core -1
     /*End of Server setup in Main Thread*/
 
     printf("Starting server program\n");
