@@ -889,6 +889,7 @@ static void initialize_queues() {
     RTE_LCORE_FOREACH_SLAVE(lcore_id) {
         rte_eth_rx_queue_setup(PORT_ID, q, NB_RX_DESC, 
             rte_eth_dev_socket_id(PORT_ID), NULL, mbuf_pool);
+        printf("Initialized Queue %d\n", q);
         q++;
     }
     printf("Done initializing queues!\n");
