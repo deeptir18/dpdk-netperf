@@ -41,6 +41,7 @@
 #include <rte_mempool.h>
 
 #define NNUMA 2
+#define NB_RX_DESC 4096 
 /******************************************/
 /******************************************/
 typedef unsigned long physaddr_t;
@@ -1195,7 +1196,7 @@ static void initialize_queues() {
     // macros
     RTE_LCORE_FOREACH_SLAVE(lcore_id) {
         rte_eth_rx_queue_setup(PORT_ID, q, NB_RX_DESC, 
-            rte_eth_dev_socket_id(PORT_ID), NULL, mbufpool);
+            rte_eth_dev_socket_id(PORT_ID), NULL, mbuf_pool);
         q++;
     }
 }
