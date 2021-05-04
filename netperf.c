@@ -1376,17 +1376,17 @@ static void dispatch_threads () {
                 rte_pktmbuf_free_(rx_bufs[i]);
             }
         }
-        // if (n_to_tx > 0) {
-        //     nb_tx = rte_eth_tx_burst_(our_dpdk_port_id, q, tx_bufs, n_to_tx);
-        //     if (nb_tx != n_to_tx) {
-        //         printf("error: could not transmit all %u pkts, transmitted %u\n", n_to_tx, nb_tx);
-        //     }
-        //     if (memory_mode == MEM_EXT_MANUAL_DPDK) {
-        //         for (int i = 0; i < nb_tx; i++) {
-        //             rte_pktmbuf_free_(rx_bufs[i]);
-        //         }
-        //     }
-        // }
+        if (n_to_tx > 0) {
+            nb_tx = rte_eth_tx_burst_(our_dpdk_port_id, q, tx_bufs, n_to_tx);
+            if (nb_tx != n_to_tx) {
+                printf("error: could not transmit all %u pkts, transmitted %u\n", n_to_tx, nb_tx);
+            }
+            if (memory_mode == MEM_EXT_MANUAL_DPDK) {
+                for (int i = 0; i < nb_tx; i++) {
+                    rte_pktmbuf_free_(rx_bufs[i]);
+                }
+            }
+        }
     }
 }
 /* What should the setup of do server be?
