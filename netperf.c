@@ -1145,14 +1145,15 @@ static int do_client(void) {
         pkt->pkt_len = header_size + message_size;
         pkt->nb_segs = 1;
         int pkts_sent = 0;
-
+        printf("Segfault 5\n");
         while (pkts_sent < 1) {
             pkts_sent = rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
         }
+        printf("Segfault 6\n");
         outstanding ++;
         uint64_t last_sent = rte_get_timer_cycles();
         // printf("Sent packet at %u, %d is outstanding, intersend is %u\n", (unsigned)last_sent, outstanding, (unsigned)intersend_time);
-        printf("Segfault 5\n");
+        printf("Segfault 7\n");
         /* now poll on receiving packets */
         nb_rx = 0;
         reqs += 1;
