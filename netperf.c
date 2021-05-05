@@ -1096,7 +1096,7 @@ static int do_client(void) {
             return -EINVAL;
         }
         size_t header_size = 0;
-
+        printf("Segfault 1\n");
         uint8_t *ptr = rte_pktmbuf_mtod(pkt, uint8_t *);
         /* add in an ethernet header */
         eth_hdr = (struct rte_ether_hdr *)ptr;
@@ -1105,7 +1105,7 @@ static int do_client(void) {
         eth_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
         ptr += sizeof(*eth_hdr);
         header_size += sizeof(*eth_hdr);
-
+        printf("Segfault 2\n");
         /* add in ipv4 header*/
         ipv4_hdr = (struct rte_ipv4_hdr *)ptr;
         ipv4_hdr->version_ihl = IP_VHL_DEF;
@@ -1121,7 +1121,7 @@ static int do_client(void) {
         ipv4_hdr->hdr_checksum = 0;
         header_size += sizeof(*ipv4_hdr);
         ptr += sizeof(*ipv4_hdr);
-
+        printf("Segfault 3\n");
         /* add in UDP hdr*/
         udp_hdr = (struct rte_udp_hdr *)ptr;
         udp_hdr->src_port = rte_cpu_to_be_16(client_port);
@@ -1137,7 +1137,7 @@ static int do_client(void) {
         uint64_t send_time = time_now(clock_offset);
         uint64_t *timestamp_ptr = (uint64_t *)(ptr);
         *timestamp_ptr = send_time;
-
+        printf("Segfault 4\n");
         pkt->l2_len = RTE_ETHER_HDR_LEN;
         pkt->l3_len = sizeof(struct rte_ipv4_hdr);
         pkt->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
@@ -1152,7 +1152,7 @@ static int do_client(void) {
         outstanding ++;
         uint64_t last_sent = rte_get_timer_cycles();
         // printf("Sent packet at %u, %d is outstanding, intersend is %u\n", (unsigned)last_sent, outstanding, (unsigned)intersend_time);
-
+        printf("Segfault 5\n");
         /* now poll on receiving packets */
         nb_rx = 0;
         reqs += 1;
