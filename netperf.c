@@ -1145,7 +1145,7 @@ static int do_client(void) {
         pkt->pkt_len = header_size + message_size;
         pkt->nb_segs = 1;
         int pkts_sent = 0;
-        printf("Segfault 5: %d and %d\n", our_dpdk_port_id, pkts_sent);
+        printf("Segfault 5: %d and %d and %d\n", our_dpdk_port_id, pkts_sent, pkt != NULL);
         while (pkts_sent < 1) {
             pkts_sent = rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
         }
