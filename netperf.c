@@ -335,7 +335,7 @@ struct rte_mempool *header_mempool;
 //struct rte_mempool *tx_mbuf_pool;
 //struct rte_mempool *tx_mbuf_pool;
 static uint64_t ext_mem_iova;
-static uint16_t our_dpdk_port_id;
+static uint16_t our_dpdk_port_id = 0;
 static struct rte_ether_addr my_eth;
 static Latency_Dist_t latency_dist = { .min = LONG_MAX, .max = 0, .total_count = 0, .latency_sum = 0 };
 static uint64_t clock_offset = 0;
