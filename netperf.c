@@ -18,7 +18,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <numaif.h>
-
 #include <rte_memory.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
@@ -1147,7 +1146,9 @@ static int do_client(void) {
         int pkts_sent = 0;
         printf("Segfault 5: %d and %d and %d\n", our_dpdk_port_id, pkts_sent, pkt != NULL);
         while (pkts_sent < 1) {
+            printf("Segfault 5.1: Just before the burst!\n");
             pkts_sent = rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
+            printf("Segfault 5.2: Made it past the burst!\n");
         }
         printf("Segfault 6\n");
         outstanding ++;
