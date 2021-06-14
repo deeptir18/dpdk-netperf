@@ -948,9 +948,9 @@ static int dpdk_init(int argc, char **argv) {
 			my_eth.addr_bytes[4], my_eth.addr_bytes[5]);
 
     initialize_queues();
-    // if (rte_lcore_count() > 1) {
-    //     printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
-    // }
+    if (rte_lcore_count() > 1) {
+        printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
+    }
     
     return args_parsed;
 }
@@ -1071,6 +1071,7 @@ void rte_pktmbuf_attach_extbuf_(struct rte_mbuf *m, void *buf_addr, rte_iova_t b
 }
 
 static int do_client(void) {
+    printf("Beginning of Client!\n");
     clock_offset = raw_time();
     uint64_t start_time, end_time;
     struct rte_mbuf *pkts[BURST_SIZE];
@@ -1429,6 +1430,7 @@ static int dispatch_threads () {
  * 7. Initialize all the multithreaded queues
  */
 static int do_server(void) {
+    printf("Beginning of Server!\n");
     /*Start of Server setup in Main thread*/
     // void *ext_mem_addr = NULL;
     // void *paddrs_mem = malloc(sizeof(physaddr_t) * 100);
