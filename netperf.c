@@ -948,7 +948,7 @@ static int dpdk_init(int argc, char **argv) {
 			my_eth.addr_bytes[2], my_eth.addr_bytes[3],
 			my_eth.addr_bytes[4], my_eth.addr_bytes[5]);
 
-    initialize_queues();
+    // initialize_queues();
     if (rte_lcore_count() > 1) {
         printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
     }
