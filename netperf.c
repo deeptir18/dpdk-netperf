@@ -940,6 +940,7 @@ static int dpdk_init(int argc, char **argv) {
     }
     our_dpdk_port_id = port_id;
     rte_eth_macaddr_get(our_dpdk_port_id, &my_eth);
+    printf("Port ID: %d\n", our_dpdk_port_id);
     printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
 			(unsigned)our_dpdk_port_id,
