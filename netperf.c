@@ -894,7 +894,6 @@ static void initialize_queues() {
 }
 
 static int dpdk_init(int argc, char **argv) {
-    
     // initialize Environment Abstraction Layer
     // our arguments: "-c", "0xff", "-n", "4", "-w", "0000:31:00.0","--proc-type=auto"
     int args_parsed = rte_eal_init(argc, argv);
@@ -948,7 +947,7 @@ static int dpdk_init(int argc, char **argv) {
 			my_eth.addr_bytes[2], my_eth.addr_bytes[3],
 			my_eth.addr_bytes[4], my_eth.addr_bytes[5]);
 
-    // initialize_queues();
+    initialize_queues();
     if (rte_lcore_count() > 1) {
         printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
     }
@@ -956,15 +955,16 @@ static int dpdk_init(int argc, char **argv) {
     return args_parsed;
 }
 
-static uint64_t raw_time(void) {
+static uint64_t raw_time(void) 
+{
     struct timespec tstart={0,0};
     clock_gettime(CLOCK_MONOTONIC, &tstart);
     uint64_t t = (uint64_t)(tstart.tv_sec*1.0e9 + tstart.tv_nsec);
     return t;
-
 }
 
-static uint64_t time_now(uint64_t offset) {
+static uint64_t time_now(uint64_t offset) 
+{
     return raw_time() - offset;
 }
 
@@ -1038,7 +1038,6 @@ static int parse_packet(struct sockaddr_in *src,
     *payload_len = pkt->pkt_len - header;
     *payload = (void *)p;
     return 0;
-
 }
 
 static uint16_t rte_eth_tx_burst_(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **tx_pkts, uint16_t nb_pkts) {
@@ -1150,7 +1149,7 @@ static int do_client(void) {
         printf("Packets sent: %d\n", pkts_sent);
         while (pkts_sent < 1) {
             printf("Segfault 5.1: Just before the burst!\n");
-            pkts_sent = rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
+            pkts_sent = 1; //rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
             printf("Segfault 5.2: Made it past the burst!\n");
         }
         printf("Segfault 6\n");
