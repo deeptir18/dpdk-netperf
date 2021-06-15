@@ -72,15 +72,16 @@ uint8_t sym_rss_key[] = {
     0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
     0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
 };
-static struct rte_eth_conf port_conf = {
+static struct rte_eth_conf port_conf = { // Effects the NIC's port configuration
     .rxmode = {
         .mq_mode = ETH_MQ_RX_RSS,
         .max_rx_pkt_len = RTE_ETHER_MAX_LEN,  // 1518 
     },
     .rx_adv_conf = {
         .rss_conf = {
-            .rss_key = sym_rss_key,
-            .rss_key_len = 40,
+            // .rss_key = sym_rss_key,
+            // .rss_key_len = 40,
+            .rss_key_len = NULL,
             .rss_hf = ETH_RSS_IP | ETH_RSS_TCP | ETH_RSS_UDP
         },
     },
@@ -816,14 +817,14 @@ static int init_dpdk_port(uint16_t port_id, struct rte_mempool *mbuf_pool) {
     rte_eth_dev_set_mtu(port_id, RX_PACKET_LEN);
     rte_eth_dev_get_mtu(port_id, &mtu);
     fprintf(stderr, "Dev info MTU:%u\n", mtu);
-    struct rte_eth_conf port_conf = {};
+    // struct rte_eth_conf port_conf = {};
     port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
             
     port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP;
     port_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
     //    port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
     //    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP | dev_info.flow_type_rss_offloads;
-    port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
+    // port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
 
     struct rte_eth_rxconf rx_conf = {};
     rx_conf.rx_thresh.pthresh = RX_PTHRESH;
@@ -1149,7 +1150,7 @@ static int do_client(void) {
         printf("Packets sent: %d\n", pkts_sent);
         while (pkts_sent < 1) {
             printf("Segfault 5.1: Just before the burst!\n");
-            pkts_sent = 1; //rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
+            pkts_sent = rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
             printf("Segfault 5.2: Made it past the burst!\n");
         }
         printf("Segfault 6\n");
