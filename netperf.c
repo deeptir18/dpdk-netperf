@@ -1259,6 +1259,7 @@ static int dispatch_threads () {
         if (nb_rx == 0) {
             continue;
         }
+        printf("Received a packet on queue %d!\n", q);
         n_to_tx = 0;
         for (i = 0; i < nb_rx; i++) {
             struct sockaddr_in src, dst;
