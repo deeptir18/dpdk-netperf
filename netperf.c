@@ -1149,7 +1149,7 @@ static int do_client(void) {
         printf("Packets sent: %d\n", pkts_sent);
         while (pkts_sent < 1) {
             printf("Segfault 5.1: Just before the burst!\n");
-            pkts_sent = 1; //rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
+            pkts_sent = rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
             printf("Segfault 5.2: Made it past the burst!\n");
         }
         printf("Segfault 6\n");
