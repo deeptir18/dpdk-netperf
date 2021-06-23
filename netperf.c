@@ -303,7 +303,7 @@ static uint32_t seconds = 1;
 static uint32_t rate = 500000; // in packets / second
 static uint32_t intersend_time;
 static unsigned int client_port = 12345;
-static unsigned int server_port = 12345;
+static unsigned int server_port = 72345;
 struct rte_mempool *mbuf_pool;
 struct rte_mempool *extbuf_mempool;
 struct rte_mempool *header_mempool;
@@ -461,7 +461,7 @@ static int parse_args(int argc, char *argv[]) {
         {0,           0,                 0,  0   }
     };
     int long_index = 0;
-    while ((opt = getopt_long(argc, argv,"m:i:s:p:c:z:t:r:b:n:",
+    while ((opt = getopt_long(argc, argv,"m:i:s:p:c:z:t:r:b:n:h:k:",
                    long_options, &long_index )) != -1) {
         switch (opt) {
             case 'm':
@@ -534,7 +534,8 @@ static int parse_args(int argc, char *argv[]) {
             case 'k':
                 zero_copy_mode = 1;
                 break;
-            default: print_usage();
+            default: 
+                 print_usage();
                  exit(EXIT_FAILURE);
         }
     }
@@ -983,7 +984,7 @@ static int parse_packet(struct sockaddr_in *src,
         return 1;
     }
     if (RTE_ETHER_TYPE_IPV4 != eth_type) {
-        printf("Bad ether type");
+        printf("Bad ether type\n");
         return 1;
     }
 
@@ -1053,6 +1054,39 @@ void rte_pktmbuf_attach_extbuf_(struct rte_mbuf *m, void *buf_addr, rte_iova_t b
     rte_pktmbuf_attach_extbuf(m, buf_addr, buf_iova, buf_len, shinfo);
 }
 
+uint32_t
+checksum(unsigned char *buf, uint32_t nbytes, uint32_t sum)
+{
+	unsigned int	 i;
+
+	/* Checksum all the pairs of bytes first. */
+	for (i = 0; i < (nbytes & ~1U); i += 2) {
+		sum += (uint16_t)ntohs(*((uint16_t *)(buf + i)));
+		if (sum > 0xFFFF)
+			sum -= 0xFFFF;
+	}
+
+	/*
+	 * If there's a single byte left over, checksum it, too.
+	 * Network byte order is big-endian, so the remaining byte is
+	 * the high byte.
+	 */
+	if (i < nbytes) {
+		sum += buf[i] << 8;
+		if (sum > 0xFFFF)
+			sum -= 0xFFFF;
+	}
+
+	return sum;
+}
+
+uint32_t
+wrapsum(uint32_t sum)
+{
+	sum = ~sum & 0xFFFF;
+	return htons(sum);
+}
+
 static int do_client(void) {
     clock_offset = raw_time();
     uint64_t start_time, end_time;
@@ -1089,17 +1123,19 @@ static int do_client(void) {
 
         /* add in ipv4 header*/
         ipv4_hdr = (struct rte_ipv4_hdr *)ptr;
-        ipv4_hdr->version_ihl = IP_VHL_DEF;
-        ipv4_hdr->type_of_service = 0;
+        ipv4_hdr->version_ihl = 0x45;
+        ipv4_hdr->type_of_service = 0x0;
         ipv4_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + message_size);
-        ipv4_hdr->packet_id = 0;
+        ipv4_hdr->packet_id = rte_cpu_to_be_16(1);
         ipv4_hdr->fragment_offset = 0;
-        ipv4_hdr->time_to_live = IP_DEFTTL;
+        ipv4_hdr->time_to_live = 64;
         ipv4_hdr->next_proto_id = IPPROTO_UDP;
         ipv4_hdr->src_addr = rte_cpu_to_be_32(my_ip);
         ipv4_hdr->dst_addr = rte_cpu_to_be_32(server_ip);
-        /* offload checksum computation in hardware */
-        ipv4_hdr->hdr_checksum = 0;
+
+        uint32_t ipv4_checksum = wrapsum(checksum((unsigned char *)ipv4_hdr, sizeof(struct rte_ipv4_hdr), 0));
+        printf("Checksum is %u\n", (unsigned)ipv4_checksum);
+        ipv4_hdr->hdr_checksum = rte_cpu_to_be_32(ipv4_checksum);
         header_size += sizeof(*ipv4_hdr);
         ptr += sizeof(*ipv4_hdr);
 
@@ -1108,12 +1144,28 @@ static int do_client(void) {
         udp_hdr->src_port = rte_cpu_to_be_16(client_port);
         udp_hdr->dst_port = rte_cpu_to_be_16(server_port);
         udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + message_size);
-        udp_hdr->dgram_cksum = 0;
+
+	//sum = wrapsum(checksum((unsigned char *)udp, sizeof(*udp),
+	 //   checksum(data, len, checksum((unsigned char *)&ip->ip_src,
+	   // 2 * sizeof(ip->ip_src),
+	    //IPPROTO_UDP + (uint32_t)ntohs(udp->uh_ulen)))));
+        uint16_t udp_cksum =  rte_ipv4_udptcp_cksum(ipv4_hdr, (void *)udp_hdr);
+
+
+        /*uint32_t udp_cksum = wrapsum(checksum((unsigned_char *)udp_hdr,
+                                    sizeof(*udp_hdr), 
+                                    checksum((ptr + sizeof(*udp_hdr)), 
+                                              message_size, 
+                                              checksum((unsigned_char *)&ipv4_hdr->src_addr, 
+                                              2 * sizeof(ip->src_addr), 
+                                              IPPROTO_UDP + (uint32_t)ntohs(sizeof(*udp_hdr))))));*/
+        printf("Udp checksum is %u\n", (unsigned)udp_cksum);
+        udp_hdr->dgram_cksum = rte_cpu_to_be_16(udp_cksum);
         ptr += sizeof(*udp_hdr);
         header_size += sizeof(*udp_hdr);
         
         /* set the payload */
-        memset(ptr, 0xAB, message_size);
+        memset(ptr, 'a', message_size);
         /* record timestamp in the payload itself*/
         uint64_t send_time = time_now(clock_offset);
         uint64_t *timestamp_ptr = (uint64_t *)(ptr);
@@ -1126,6 +1178,36 @@ static int do_client(void) {
         pkt->pkt_len = header_size + message_size;
         pkt->nb_segs = 1;
         int pkts_sent = 0;
+
+        unsigned char *pkt_buffer = rte_pktmbuf_mtod(pkt, unsigned char *);
+        int ct = 0;
+        for (int i = 0; i < sizeof(struct rte_ether_hdr); i++) {
+            printf("%02hhx", pkt_buffer[i]);
+            ct += 1;
+            if (ct % 2 == 0) {
+                printf(" ");
+            }
+        }
+        printf("\n");
+        ct = 0;
+        for (int i = sizeof(struct rte_ether_hdr); i < sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr); i++) {
+            printf("%02hhx", pkt_buffer[i]);
+            ct += 1;
+            if (ct % 2 == 0) {
+                printf(" ");
+            }
+        }
+        printf("\n");
+        ct = 0;
+        for (int i = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr); i < sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr); i++) {
+            printf("%02hhx", pkt_buffer[i]);
+            ct += 1;
+            if (ct % 2 == 0) {
+                printf(" ");
+            }
+        }
+        printf("\n");
+        //exit(1);
 
         while (pkts_sent < 1) {
             pkts_sent = rte_eth_tx_burst(our_dpdk_port_id, 0, &pkt, 1);
@@ -1231,6 +1313,7 @@ static int do_server(void) {
         if (nb_rx == 0) {
             continue;
         }
+        printf("Recieved packets: %d\n", nb_rx);
         n_to_tx = 0;
         for (i = 0; i < nb_rx; i++) {
             struct sockaddr_in src, dst;
