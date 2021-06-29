@@ -1,3 +1,11 @@
+/*
+ * Credit: This code is derived from Gerry Wan's. The original code
+ * can be found here: https://github.com/thegwan/rx-skeleton/tree/896dbcd016fecf8056f29f8b18f8ad8b3c690e42/c/count-dpdk
+ * 
+ * This is a multithreaded DPDK server that counts the number of packets received. 
+ */
+
+
 #include <signal.h>
 #include <stdbool.h>
 #include <rte_eal.h>
@@ -14,9 +22,29 @@
 #define CAPACITY 65535
 #define CACHE_SIZE 512
 #define NB_RX_DESC 4096
+#define NB_TX_DESC 4096
+#define IP_DEFTTL  64   /* from RFC 1340. */
+#define IP_VERSION 0x40
+#define IP_HDRLEN  0x05 /* default IP header length == five 32-bits words. */
+#define BURST_SIZE 32
+#define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
 
 static volatile bool force_quit;
 struct rte_mempool *mbufpool;
+static int zero_copy_mode = 0;
+static void *payload_to_copy = NULL;
+struct rte_mempool *mbuf_pool;
+
+enum {
+    MEM_DPDK = 0,
+    MEM_EXT,
+    MEM_EXT_MANUAL,
+    MEM_EXT_MANUAL_DPDK
+};
+
+const struct rte_ether_addr ether_broadcast = {
+    .addr_bytes = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+};
 
 uint8_t sym_rss_key[] = {
     0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
@@ -66,47 +94,242 @@ static void port_init()
     int lcore_id, q;
     int nb_workers = rte_lcore_count() - 1;
 
-    port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
+//    port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
 
     // 1 queue per core
-    ret = rte_eth_dev_configure(PORT_ID, nb_workers, 0, &port_conf);
+    ret = rte_eth_dev_configure(PORT_ID, nb_workers, nb_workers, &port_conf);
     if (ret < 0) 
         rte_exit(EXIT_FAILURE, "Port configuration failed.\n");
 
+    // Set up receiving queues
     q = 0;
     RTE_LCORE_FOREACH_SLAVE(lcore_id) {
         rte_eth_rx_queue_setup(PORT_ID, q, NB_RX_DESC, 
             rte_eth_dev_socket_id(PORT_ID), NULL, mbufpool);
         q++;
     }
-       
+     
+    // Set up transmitting queues
+    q = 0;
+    RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+        rte_eth_tx_queue_setup(PORT_ID, q, NB_TX_DESC, 
+            rte_eth_dev_socket_id(PORT_ID), NULL);
+        q++;
+    }     
 }
 
-/* Individually count number of received packets, immediately free rte_mbuf */
-static void recv_thread()
+static int parse_packet(struct sockaddr_in *src,
+                        struct sockaddr_in *dst,
+                        void **payload,
+                        size_t *payload_len,
+                        struct rte_mbuf *pkt)
+{
+    // packet layout order is (from outside -> in):
+    // ether_hdr
+    // ipv4_hdr
+    // udp_hdr
+    // client timestamp
+    uint8_t *p = rte_pktmbuf_mtod(pkt, uint8_t *);
+    size_t header = 0;
+
+    // check the ethernet header
+    struct rte_ether_hdr * const eth_hdr = (struct rte_ether_hdr *)(p);
+    p += sizeof(*eth_hdr);
+    header += sizeof(*eth_hdr);
+    uint16_t eth_type = ntohs(eth_hdr->ether_type);
+    struct rte_ether_addr mac_addr = {};
+
+    rte_eth_macaddr_get(PORT_ID, &mac_addr);
+    if (!rte_is_same_ether_addr(&mac_addr, &eth_hdr->d_addr) && !rte_is_same_ether_addr(&ether_broadcast, &eth_hdr->d_addr)) {
+        printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+            eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
+			eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
+			eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
+        return 1;
+    }
+    if (RTE_ETHER_TYPE_IPV4 != eth_type) {
+        printf("Bad ether type");
+        return 1;
+    }
+
+    // check the IP header
+    struct rte_ipv4_hdr *const ip_hdr = (struct rte_ipv4_hdr *)(p);
+    p += sizeof(*ip_hdr);
+    header += sizeof(*ip_hdr);
+
+    // In network byte order.
+    in_addr_t ipv4_src_addr = ip_hdr->src_addr;
+    in_addr_t ipv4_dst_addr = ip_hdr->dst_addr;
+
+    if (IPPROTO_UDP != ip_hdr->next_proto_id) {
+        printf("Bad next proto_id\n");
+        return 1;
+    }
+    
+    src->sin_addr.s_addr = ipv4_src_addr;
+    dst->sin_addr.s_addr = ipv4_dst_addr;
+
+    // check udp header
+    struct rte_udp_hdr * const udp_hdr = (struct rte_udp_hdr *)(p);
+    p += sizeof(*udp_hdr);
+    header += sizeof(*udp_hdr);
+
+    // In network byte order.
+    in_port_t udp_src_port = udp_hdr->src_port;
+    in_port_t udp_dst_port = udp_hdr->dst_port;
+
+    src->sin_port = udp_src_port;
+    dst->sin_port = udp_dst_port;
+    src->sin_family = AF_INET;
+    dst->sin_family = AF_INET;
+    
+    *payload_len = pkt->pkt_len - header;
+    *payload = (void *)p;
+    return 0;
+}
+
+static inline struct tx_pktmbuf_priv *tx_pktmbuf_get_priv(struct rte_mbuf *buf)
+{
+	return (struct tx_pktmbuf_priv *)(((char *)buf)
+			+ sizeof(struct rte_mbuf));
+}
+
+/* Individually count number of 
+   received packets, immediately 
+   free rte_mbuf */
+static int recv_thread()
 {
     struct rte_mbuf *mbufs[32];
-    uint16_t i, q, nb_rx;
+    uint16_t nb_rx, n_to_tx, nb_tx, i, q;
     int lcore_id = rte_lcore_id();
     
     q = lcore_id - 1;
     printf("Starting RX from core %u (queue %u)...\n", lcore_id, q);
 
-    
     uint64_t total = 0;
-
+    struct rte_mbuf *rx_bufs[BURST_SIZE];
+    struct rte_mbuf *tx_bufs[BURST_SIZE];
+    struct rte_mbuf *secondary_tx_bufs[BURST_SIZE];
+    struct rte_mbuf *rx_buf;
+    struct rte_ether_hdr *rx_ptr_mac_hdr;
+    struct rte_ether_hdr *tx_ptr_mac_hdr;
+    struct rte_ipv4_hdr *rx_ptr_ipv4_hdr;
+    struct rte_ipv4_hdr *tx_ptr_ipv4_hdr;
+    struct rte_udp_hdr *rx_rte_udp_hdr;
+    struct rte_udp_hdr *tx_rte_udp_hdr;
+    uint64_t *tx_buf_id_ptr;
+    uint64_t *rx_buf_id_ptr;
     while (!force_quit) {
         nb_rx = rte_eth_rx_burst(PORT_ID, q, mbufs, 32);
-        if (nb_rx != 0) printf("nb_rx = %d\n", nb_rx);
+        if (nb_rx != 0) {
+            /*CREATE NEW MBUFS HERE*/
+            // rte_eth_tx_burst(PORT_ID, q, mbufs, 32); 
+            printf("This is core %d\n", lcore_id);
+            printf("This is the first ");
+        }
         for (i = 0; i < nb_rx; i++) {
             total += 1;
             rte_pktmbuf_free(mbufs[i]);
+            printf("Core %u total RX: %lu\n", lcore_id, total);
+            struct sockaddr_in src, dst;
+            void *payload = NULL;
+            size_t payload_length = 0;
+            int valid = parse_packet(&src, &dst, &payload, &payload_length, mbufs[i]);
+            /*rte_mbuf: A type describing a particular segment of the scattered packet*/
+            struct rte_mbuf* secondary = NULL;
+            if (valid == 0) {
+                rx_buf = rx_bufs[i];
+                size_t header_size = rx_buf->pkt_len - (payload_length);
+                payload_length -= 8;
+                header_size += 8;
+                // echo the packet back
+                // normal DPDK memory
+                tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
+                if (zero_copy_mode != 1) {
+                    char *pkt_buf = (char *)(rte_pktmbuf_mtod_offset(tx_bufs[n_to_tx], char *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN + 8));
+                    rte_memcpy(pkt_buf, (char *)(payload_to_copy), payload_length);
+                }
+                struct rte_mbuf* tx_buf = tx_bufs[n_to_tx];
+                secondary = secondary_tx_bufs[n_to_tx];
+
+                if (tx_buf == NULL) {
+                    printf("Error first allocating tx mbuf\n");
+                    return -EINVAL;
+                }
+                /* swap src and dst ether addresses */
+                rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
+                tx_ptr_mac_hdr = rte_pktmbuf_mtod(tx_buf, struct rte_ether_hdr *);
+                rte_ether_addr_copy(&rx_ptr_mac_hdr->s_addr, &tx_ptr_mac_hdr->d_addr);
+				rte_ether_addr_copy(&rx_ptr_mac_hdr->d_addr, &tx_ptr_mac_hdr->s_addr);
+				// rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->d_addr);
+                tx_ptr_mac_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+
+                /* swap src and dst ip addresses */
+                //src_ip_addr = rx_ptr_ipv4_hdr->src_addr;
+                rx_ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
+                tx_ptr_ipv4_hdr = rte_pktmbuf_mtod_offset(tx_buf, struct rte_ipv4_hdr *, RTE_ETHER_HDR_LEN);
+                tx_ptr_ipv4_hdr->src_addr = rx_ptr_ipv4_hdr->dst_addr;
+                tx_ptr_ipv4_hdr->dst_addr = rx_ptr_ipv4_hdr->src_addr;
+
+                tx_ptr_ipv4_hdr->hdr_checksum = 0;
+                tx_ptr_ipv4_hdr->version_ihl = IP_VHL_DEF;
+                tx_ptr_ipv4_hdr->type_of_service = 0;
+                tx_ptr_ipv4_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_length);
+                tx_ptr_ipv4_hdr->packet_id = 0;
+                tx_ptr_ipv4_hdr->fragment_offset = 0;
+                tx_ptr_ipv4_hdr->time_to_live = IP_DEFTTL;
+                tx_ptr_ipv4_hdr->next_proto_id = IPPROTO_UDP;
+                /* offload checksum computation in hardware */
+                tx_ptr_ipv4_hdr->hdr_checksum = 0;
+
+                /* Swap UDP ports */
+                rx_rte_udp_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+                tx_rte_udp_hdr = rte_pktmbuf_mtod_offset(tx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+                //tmp_port = rte_udp_hdr->src_port;
+                tx_rte_udp_hdr->src_port = rx_rte_udp_hdr->dst_port;
+                tx_rte_udp_hdr->dst_port = rx_rte_udp_hdr->src_port;
+                tx_rte_udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_length);
+                tx_rte_udp_hdr->dgram_cksum = 0;
+
+                /* Set packet id */
+                tx_buf_id_ptr = rte_pktmbuf_mtod_offset(tx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
+                rx_buf_id_ptr = rte_pktmbuf_mtod_offset(rx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
+                *tx_buf_id_ptr = *rx_buf_id_ptr;
+
+                /* Set metadata */
+                tx_buf->l2_len = RTE_ETHER_HDR_LEN;
+                tx_buf->l3_len = sizeof(struct rte_ipv4_hdr);
+                tx_buf->ol_flags = PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+                tx_buf->data_len = header_size + payload_length;
+                tx_buf->pkt_len = header_size + payload_length;
+                tx_buf->nb_segs = 1;
+                n_to_tx++;
+                // if (memory_mode != MEM_EXT_MANUAL_DPDK) {
+                // rte_pktmbuf_free(rx_bufs[i]);
+                // }
+                continue;
+            } else {
+                rte_pktmbuf_free(rx_bufs[i]);
+            }
+        }
+        if (n_to_tx > 0) {
+            nb_tx = rte_eth_tx_burst(PORT_ID, i, tx_bufs, n_to_tx);
+            if (nb_tx != n_to_tx) {
+                printf("error: could not transmit all %u pkts, transmitted %u\n", n_to_tx, nb_tx);
+            }
+            // if (memory_mode == MEM_EXT_MANUAL_DPDK) {
+            //     for (int i = 0; i < nb_tx; i++) {
+            //         rte_pktmbuf_free(rx_bufs[i]);
+            //     }
+            // }
         }
     }
-
-    printf("Core %u total RX: %lu\n", lcore_id, total);
-    
 }
+
+//     printf("Core %u total RX: %lu\n", lcore_id, total);
+//     }
+// }
 
 static int
 lcore_launch(__rte_unused void *arg)
@@ -143,9 +366,7 @@ static void disp_eth_stats(void)
             printf("\tQueue %u packets dropped by HW: %lu\n", q, eth_stats.q_errors[q]);
         }
     }
-
     printf("Capture rate: %lf\n", (float)eth_stats.ipackets / total);
-    
 }
 
 /* 
