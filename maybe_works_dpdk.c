@@ -251,7 +251,7 @@ static int recv_thread()
     uint64_t *tx_buf_id_ptr;
     uint64_t *rx_buf_id_ptr;
     while (!force_quit) {
-        // for (q = 0; q <= lcore_id - 1; q++) {
+        n_to_tx = 0;
         nb_rx = rte_eth_rx_burst(PORT_ID, q, rx_bufs, BURST_SIZE);
         for (i = 0; i < nb_rx; i++) {
             struct sockaddr_in src, dst;
@@ -268,18 +268,14 @@ static int recv_thread()
                 // echo the packet back
                 // normal DPDK memory
                 tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
-                // if (zero_copy_mode != 1) {
                 char *pkt_buf = (char *)(rte_pktmbuf_mtod_offset(tx_bufs[n_to_tx], char *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN + 8));
                 rte_memcpy(pkt_buf, (char *)(payload_to_copy), payload_length);
-                // }
-                // printf("Segfault 3!\n");
                 struct rte_mbuf* tx_buf = tx_bufs[n_to_tx];
                 secondary = secondary_tx_bufs[n_to_tx];
                 if (tx_buf == NULL) {
                     printf("Error first allocating tx mbuf\n");
                     return -EINVAL;
                 }
-                // printf("Segfault 4\n");
                 /* swap src and dst ether addresses */
                 rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
                 tx_ptr_mac_hdr = rte_pktmbuf_mtod(tx_buf, struct rte_ether_hdr *);
