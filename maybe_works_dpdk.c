@@ -76,6 +76,39 @@ static struct rte_eth_conf port_conf = {
     },
 };
 
+uint32_t
+wrapsum(uint32_t sum)
+{
+	sum = ~sum & 0xFFFF;
+	return htons(sum);
+}
+
+uint32_t
+checksum(unsigned char *buf, uint32_t nbytes, uint32_t sum)
+{
+	unsigned int	 i;
+
+	/* Checksum all the pairs of bytes first. */
+	for (i = 0; i < (nbytes & ~1U); i += 2) {
+		sum += (uint16_t)ntohs(*((uint16_t *)(buf + i)));
+		if (sum > 0xFFFF)
+			sum -= 0xFFFF;
+	}
+
+	/*
+	 * If there's a single byte left over, checksum it, too.
+	 * Network byte order is big-endian, so the remaining byte is
+	 * the high byte.
+	 */
+	if (i < nbytes) {
+		sum += buf[i] << 8;
+		if (sum > 0xFFFF)
+			sum -= 0xFFFF;
+	}
+
+	return sum;
+}
+
 static void
 signal_handler(int signum)
 {
@@ -291,7 +324,9 @@ static int recv_thread()
                 tx_ptr_ipv4_hdr->src_addr = rx_ptr_ipv4_hdr->dst_addr;
                 tx_ptr_ipv4_hdr->dst_addr = rx_ptr_ipv4_hdr->src_addr;
 
-                tx_ptr_ipv4_hdr->hdr_checksum = 0;
+                uint32_t ipv4_checksum = wrapsum(checksum((unsigned char *)tx_ptr_ipv4_hdr, sizeof(struct rte_ipv4_hdr), 0));
+                printf("Checksum is %u\n", (unsigned)ipv4_checksum);
+                tx_ptr_ipv4_hdr->hdr_checksum = ipv4_checksum;
                 tx_ptr_ipv4_hdr->version_ihl = IP_VHL_DEF;
                 tx_ptr_ipv4_hdr->type_of_service = 0;
                 tx_ptr_ipv4_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + payload_length);
@@ -300,8 +335,8 @@ static int recv_thread()
                 tx_ptr_ipv4_hdr->time_to_live = IP_DEFTTL;
                 tx_ptr_ipv4_hdr->next_proto_id = IPPROTO_UDP;
                 /* offload checksum computation in hardware */
-                tx_ptr_ipv4_hdr->hdr_checksum = 0;
-                printf("Segfault 5\n");
+                // tx_ptr_ipv4_hdr->hdr_checksum = 0;
+                // printf("Segfault 5\n");
                 /* Swap UDP ports */
                 rx_rte_udp_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
                 tx_rte_udp_hdr = rte_pktmbuf_mtod_offset(tx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
@@ -309,7 +344,9 @@ static int recv_thread()
                 tx_rte_udp_hdr->src_port = rx_rte_udp_hdr->dst_port;
                 tx_rte_udp_hdr->dst_port = rx_rte_udp_hdr->src_port;
                 tx_rte_udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_length);
-                tx_rte_udp_hdr->dgram_cksum = 0;
+                uint16_t udp_cksum =  rte_ipv4_udptcp_cksum(tx_ptr_ipv4_hdr, (void *)tx_rte_udp_hdr);
+                printf("Udp checksum is %u\n", (unsigned)udp_cksum);
+                tx_rte_udp_hdr->dgram_cksum = udp_cksum;
 
                 /* Set packet id */
                 tx_buf_id_ptr = rte_pktmbuf_mtod_offset(tx_buf, uint64_t *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN);
