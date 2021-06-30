@@ -28,6 +28,8 @@
 #define IP_HDRLEN  0x05 /* default IP header length == five 32-bits words. */
 #define BURST_SIZE 32
 #define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
+#define MBUF_BUF_SIZE RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM
+#define NUM_MBUFS 8191
 
 static volatile bool force_quit;
 struct rte_mempool *mbufpool;
@@ -40,6 +42,12 @@ enum {
     MEM_EXT,
     MEM_EXT_MANUAL,
     MEM_EXT_MANUAL_DPDK
+};
+
+struct tx_pktmbuf_priv
+{
+    int32_t lkey;
+    int32_t field2; // needs to be atleast 8 bytes large
 };
 
 const struct rte_ether_addr ether_broadcast = {
@@ -140,14 +148,34 @@ static int parse_packet(struct sockaddr_in *src,
     struct rte_ether_addr mac_addr = {};
 
     rte_eth_macaddr_get(PORT_ID, &mac_addr);
-    if (!rte_is_same_ether_addr(&mac_addr, &eth_hdr->d_addr) && !rte_is_same_ether_addr(&ether_broadcast, &eth_hdr->d_addr)) {
-        printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+    if (!rte_is_same_ether_addr(&mac_addr, &eth_hdr->d_addr)
+        && !rte_is_same_ether_addr(&ether_broadcast, &eth_hdr->d_addr)) {
+        printf("Bad MAC NOT SAME MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
             eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
 			eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
 			eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
+        printf("Bad MAC NOT SAME MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+            eth_hdr->s_addr.addr_bytes[0], eth_hdr->s_addr.addr_bytes[1],
+			eth_hdr->s_addr.addr_bytes[2], eth_hdr->s_addr.addr_bytes[3],
+			eth_hdr->s_addr.addr_bytes[4], eth_hdr->s_addr.addr_bytes[5]);
+        printf("Reference MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+            mac_addr.addr_bytes[0], mac_addr.addr_bytes[1],
+			mac_addr.addr_bytes[2], mac_addr.addr_bytes[3],
+			mac_addr.addr_bytes[4], mac_addr.addr_bytes[5]);
+            // printf("Bad MAC NOT SAME MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+			//    " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+            // mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3],
+			// mac_addr[4], mac_addr[5]);
         return 1;
     }
+    printf("[rte_eth_tx_burst_] Src MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+            " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+            eth_hdr->s_addr.addr_bytes[0], eth_hdr->s_addr.addr_bytes[1],
+            eth_hdr->s_addr.addr_bytes[2], eth_hdr->s_addr.addr_bytes[3],
+            eth_hdr->s_addr.addr_bytes[4], eth_hdr->s_addr.addr_bytes[5]);
     if (RTE_ETHER_TYPE_IPV4 != eth_type) {
         printf("Bad ether type");
         return 1;
@@ -186,6 +214,8 @@ static int parse_packet(struct sockaddr_in *src,
     
     *payload_len = pkt->pkt_len - header;
     *payload = (void *)p;
+
+    printf("End of parse packets!\n");
     return 0;
 }
 
@@ -200,7 +230,7 @@ static inline struct tx_pktmbuf_priv *tx_pktmbuf_get_priv(struct rte_mbuf *buf)
    free rte_mbuf */
 static int recv_thread()
 {
-    struct rte_mbuf *mbufs[32];
+    printf("Receive thread!\n");
     uint16_t nb_rx, n_to_tx, nb_tx, i, q;
     int lcore_id = rte_lcore_id();
     
@@ -221,21 +251,13 @@ static int recv_thread()
     uint64_t *tx_buf_id_ptr;
     uint64_t *rx_buf_id_ptr;
     while (!force_quit) {
-        nb_rx = rte_eth_rx_burst(PORT_ID, q, mbufs, 32);
-        if (nb_rx != 0) {
-            /*CREATE NEW MBUFS HERE*/
-            // rte_eth_tx_burst(PORT_ID, q, mbufs, 32); 
-            printf("This is core %d\n", lcore_id);
-            printf("This is the first ");
-        }
+        // for (q = 0; q <= lcore_id - 1; q++) {
+        nb_rx = rte_eth_rx_burst(PORT_ID, q, rx_bufs, BURST_SIZE);
         for (i = 0; i < nb_rx; i++) {
-            total += 1;
-            rte_pktmbuf_free(mbufs[i]);
-            printf("Core %u total RX: %lu\n", lcore_id, total);
             struct sockaddr_in src, dst;
             void *payload = NULL;
             size_t payload_length = 0;
-            int valid = parse_packet(&src, &dst, &payload, &payload_length, mbufs[i]);
+            int valid = parse_packet(&src, &dst, &payload, &payload_length, rx_bufs[i]);
             /*rte_mbuf: A type describing a particular segment of the scattered packet*/
             struct rte_mbuf* secondary = NULL;
             if (valid == 0) {
@@ -246,23 +268,24 @@ static int recv_thread()
                 // echo the packet back
                 // normal DPDK memory
                 tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
-                if (zero_copy_mode != 1) {
-                    char *pkt_buf = (char *)(rte_pktmbuf_mtod_offset(tx_bufs[n_to_tx], char *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN + 8));
-                    rte_memcpy(pkt_buf, (char *)(payload_to_copy), payload_length);
-                }
+                // if (zero_copy_mode != 1) {
+                char *pkt_buf = (char *)(rte_pktmbuf_mtod_offset(tx_bufs[n_to_tx], char *, sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr) + RTE_ETHER_HDR_LEN + 8));
+                rte_memcpy(pkt_buf, (char *)(payload_to_copy), payload_length);
+                // }
+                // printf("Segfault 3!\n");
                 struct rte_mbuf* tx_buf = tx_bufs[n_to_tx];
                 secondary = secondary_tx_bufs[n_to_tx];
-
                 if (tx_buf == NULL) {
                     printf("Error first allocating tx mbuf\n");
                     return -EINVAL;
                 }
+                // printf("Segfault 4\n");
                 /* swap src and dst ether addresses */
                 rx_ptr_mac_hdr = rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
                 tx_ptr_mac_hdr = rte_pktmbuf_mtod(tx_buf, struct rte_ether_hdr *);
                 rte_ether_addr_copy(&rx_ptr_mac_hdr->s_addr, &tx_ptr_mac_hdr->d_addr);
-				rte_ether_addr_copy(&rx_ptr_mac_hdr->d_addr, &tx_ptr_mac_hdr->s_addr);
-				// rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->d_addr);
+                rte_ether_addr_copy(&rx_ptr_mac_hdr->d_addr, &tx_ptr_mac_hdr->s_addr);
+                // rte_ether_addr_copy(&src_addr, &ptr_mac_hdr->d_addr);
                 tx_ptr_mac_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
                 /* swap src and dst ip addresses */
@@ -282,7 +305,7 @@ static int recv_thread()
                 tx_ptr_ipv4_hdr->next_proto_id = IPPROTO_UDP;
                 /* offload checksum computation in hardware */
                 tx_ptr_ipv4_hdr->hdr_checksum = 0;
-
+                printf("Segfault 5\n");
                 /* Swap UDP ports */
                 rx_rte_udp_hdr = rte_pktmbuf_mtod_offset(rx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
                 tx_rte_udp_hdr = rte_pktmbuf_mtod_offset(tx_buf, struct rte_udp_hdr *, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
@@ -305,31 +328,25 @@ static int recv_thread()
                 tx_buf->pkt_len = header_size + payload_length;
                 tx_buf->nb_segs = 1;
                 n_to_tx++;
-                // if (memory_mode != MEM_EXT_MANUAL_DPDK) {
-                // rte_pktmbuf_free(rx_bufs[i]);
-                // }
+                printf("Segfault 6\n");
+                rte_pktmbuf_free(rx_bufs[i]);
+                total += 1;
+                printf("Core %u total RX: %lu\n", lcore_id, total);
                 continue;
             } else {
                 rte_pktmbuf_free(rx_bufs[i]);
             }
         }
         if (n_to_tx > 0) {
-            nb_tx = rte_eth_tx_burst(PORT_ID, i, tx_bufs, n_to_tx);
-            if (nb_tx != n_to_tx) {
-                printf("error: could not transmit all %u pkts, transmitted %u\n", n_to_tx, nb_tx);
+            nb_tx = rte_eth_tx_burst(PORT_ID, q, tx_bufs, n_to_tx);
+            if (nb_tx != n_to_tx && nb_tx != 0) {
+                printf("error: %u queue could not transmit all %u pkts, transmitted %u\n", q, n_to_tx, nb_tx);
+                n_to_tx -= nb_tx;
             }
-            // if (memory_mode == MEM_EXT_MANUAL_DPDK) {
-            //     for (int i = 0; i < nb_tx; i++) {
-            //         rte_pktmbuf_free(rx_bufs[i]);
-            //     }
-            // }
         }
+        // }
     }
 }
-
-//     printf("Core %u total RX: %lu\n", lcore_id, total);
-//     }
-// }
 
 static int
 lcore_launch(__rte_unused void *arg)
@@ -352,17 +369,22 @@ static void disp_eth_stats(void)
     
     memset(&eth_stats, 0, sizeof(eth_stats));
     ret = rte_eth_stats_get(port_id, &eth_stats);
-    uint64_t total = 0;
+    uint64_t total, sent_total = 0;
     if (!ret) {
         total += (eth_stats.ipackets + eth_stats.imissed + eth_stats.ierrors);
+        sent_total += (eth_stats.opackets - eth_stats.oerrors);
         printf("\tTotal packets received by port (sum): %lu\n", total);
+        printf("\tTotal packets sent by port (sum): %lu\n", sent_total);
         printf("\tSuccessfully received packets: %lu\n", eth_stats.ipackets);
+        printf("\tSuccessfully transmitted packets: %lu\n", eth_stats.opackets);
         printf("\tPackets dropped by HW due to RX queue full: %lu\n", eth_stats.imissed);
-        printf("\tError packets: %lu\n", eth_stats.ierrors);
+        printf("\tError packets (received): %lu\n", eth_stats.ierrors);
+        printf("\tError packets (transmitted): %lu\n", eth_stats.oerrors);
         printf("\tNum RX mbuf allocation failures: %lu\n", eth_stats.rx_nombuf);
 
         for (q = 0; q < rte_lcore_count() - 1; q++) {
             printf("\tQueue %u successfully received packets: %lu\n", q, eth_stats.q_ipackets[q]);
+            printf("\tQueue %u successfully transmitted packets: %lu\n", q, eth_stats.q_opackets[q]);
             printf("\tQueue %u packets dropped by HW: %lu\n", q, eth_stats.q_errors[q]);
         }
     }
@@ -414,7 +436,19 @@ int main(int argc, char **argv)
 
     printf("Starting port 0...\n");
     rte_eth_dev_start(PORT_ID);
-
+    mbuf_pool = rte_pktmbuf_pool_create(
+                                "mbuf_pool",
+                                NUM_MBUFS * nb_ports,
+                                CACHE_SIZE,
+                                sizeof(struct tx_pktmbuf_priv),
+                                MBUF_BUF_SIZE,
+                                rte_socket_id());
+    payload_to_copy = malloc(8000);
+    memset(payload_to_copy, 'E', 8000);
+    if (payload_to_copy == NULL) {
+        printf("Could not initialize payload to copy\n.");
+        return 1;
+    }
     rte_eal_mp_remote_launch(lcore_launch, NULL, SKIP_MASTER);
     main_thread();
     rte_eal_mp_wait_lcore();
